@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Dados baixados/gerados (grandes demais para o git)
+data/
+
+# Ferramentas externas compiladas localmente (llama.cpp)
+third_party/
+
+tokenizer.json
+fixed_tokens.json
+uv.lock

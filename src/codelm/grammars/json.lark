@@ -1,0 +1,15 @@
+// JSON (RFC 8259) sobre a representação do modelo: espaços, quebras de linha
+// e os tokens de indentação relativa podem aparecer entre quaisquer elementos.
+
+start: _w value _w
+
+?value: object | array | STRING | NUMBER | "true" | "false" | "null"
+object: "{" _w (pair (_w "," _w pair)* _w)? "}"
+pair: STRING _w ":" _w value
+array: "[" _w (value (_w "," _w value)* _w)? "]"
+
+_w: (WS | <|indent|> | <|dedent|>)*
+WS: /[ \t\r\n]+/
+
+STRING: /"(\\(["\\\/bfnrt]|u[0-9a-fA-F]{4})|[^"\\\x00-\x1F])*"/
+NUMBER: /-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/

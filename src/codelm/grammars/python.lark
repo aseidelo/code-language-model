@@ -1,0 +1,136 @@
+// Python 3 (permissiva) sobre a representação do modelo.
+//
+// * Blocos: a indentação chega como <|indent|>/<|dedent|> (codelm.indentation),
+//   sempre equilibrados; um bloco é N indents, comandos e N dedents.
+// * Espaço é explícito: codelm.grammar acrescenta espaço opcional (_WS) depois
+//   de cada terminal, nunca depois de uma quebra de linha. Assim o recuo de uma
+//   linha só pode vir dos tokens de indentação (nunca de espaços literais).
+// * Dentro de (), [] e {} quebras de linha são só espaço. As regras da seção
+//   BRACKET são duplicadas por codelm.grammar: a cópia "_b" (usada dentro de
+//   parênteses) aceita quebras de linha e espaços depois de cada elemento.
+// * f-strings são tratadas como strings comuns.
+// * Na dúvida, aceita: bloquear código válido é pior que deixar passar inválido.
+// * O lexer do llguidance não volta atrás: dois terminais possíveis no mesmo
+//   ponto não podem começar com o mesmo caractere (por isso _LINE_END não
+//   engole linhas em branco, e _BLANK_LINE só aparece no nível de comando).
+
+start: (_blank | stmt)*
+
+// Fim de linha no nível de comando, seguido de linhas em branco ou só de comentário.
+_nls: _LINE_END _blank*
+_blank: _LINE_END | _BLANK_LINE
+
+stmt: simple_stmts | compound_stmt
+simple_stmts: small_stmt (";" small_stmt)* ";"? _nls
+?small_stmt: expr_stmt | yield_expr | "pass" | "break" | "continue" | return_stmt | raise_stmt
+           | global_stmt | nonlocal_stmt | import_stmt | assert_stmt | del_stmt | type_stmt
+
+expr_stmt: testlist_star_expr (annassign | augassign (yield_expr | testlist) | ("=" (yield_expr | testlist_star_expr))*)
+annassign: ":" test ("=" (yield_expr | testlist_star_expr))?
+!augassign: "+=" | "-=" | "*=" | "@=" | "/=" | "%=" | "&=" | "|=" | "^=" | "<<=" | ">>=" | "**=" | "//="
+return_stmt: "return" testlist_star_expr?
+raise_stmt: "raise" (test ("from" test)?)?
+global_stmt: "global" NAME ("," NAME)*
+nonlocal_stmt: "nonlocal" NAME ("," NAME)*
+assert_stmt: "assert" test ("," test)?
+del_stmt: "del" exprlist
+type_stmt: "type" NAME type_params? "=" test
+
+import_stmt: "import" dotted_as_names
+           | "from" DOTS? dotted_name "import" import_targets
+           | "from" DOTS "import" import_targets
+// Regex, não "." | "...": o lexer não volta atrás quando ".." não completa "...".
+DOTS: /\.+/
+import_targets: "*" | "(" _nl import_as_names_b ")" | import_as_names
+dotted_as_names: dotted_as_name ("," dotted_as_name)*
+dotted_as_name: dotted_name ("as" NAME)?
+dotted_name: NAME ("." NAME)*
+
+?compound_stmt: if_stmt | while_stmt | for_stmt | try_stmt | with_stmt | funcdef | classdef
+              | decorated | async_stmt | match_stmt
+if_stmt: "if" namedexpr_test ":" suite ("elif" namedexpr_test ":" suite)* ("else" ":" suite)?
+while_stmt: "while" namedexpr_test ":" suite ("else" ":" suite)?
+for_stmt: "for" exprlist "in" testlist_star_expr ":" suite ("else" ":" suite)?
+try_stmt: "try" ":" suite (except_clause+ ("else" ":" suite)? ("finally" ":" suite)? | "finally" ":" suite)
+except_clause: "except" "*"? (test (("as" | ",") test)?)? ":" suite
+with_stmt: "with" (with_item ("," with_item)* | "(" _nl with_item_b ("," with_item_b)* ","? ")") ":" suite
+funcdef: "def" NAME type_params? "(" _nl parameters_b? ")" ("->" test)? ":" suite
+classdef: "class" NAME type_params? ("(" _nl arglist_b? ")")? ":" suite
+decorated: (decorator)+ (classdef | funcdef | async_funcdef)
+decorator: "@" namedexpr_test _nls
+async_funcdef: "async" funcdef
+async_stmt: "async" (funcdef | with_stmt | for_stmt)
+match_stmt: "match" testlist_star_expr ":" _nls _cases
+_cases: <|indent|> (_cases | (case | _blank)+) <|dedent|>
+case: "case" testlist_star_expr ("if" namedexpr_test)? ":" suite
+type_params: "[" _nl arglist_b "]"
+
+// Bloco: comandos simples na mesma linha, ou nova linha + bloco indentado.
+suite: simple_stmts | _nls _block
+_block: <|indent|> (_block | (stmt | _blank)+) <|dedent|>
+
+// ---------------------------------------------------------------- BRACKET
+// Expressões: duplicadas em versões "_b" para dentro de parênteses.
+
+namedexpr_test: test (":=" test)?
+test: or_test ("if" or_test "else" test)? | lambdef
+lambdef: "lambda" varargslist? ":" test
+varargslist: vararg ("," vararg)* ","?
+vararg: NAME ("=" test)? | "*" NAME? | "**" NAME | "/"
+or_test: and_test ("or" and_test)*
+and_test: not_test ("and" not_test)*
+not_test: "not" not_test | comparison
+comparison: expr (comp_op expr)*
+!comp_op: "<" | ">" | "==" | ">=" | "<=" | "<>" | "!=" | "in" | "not" "in" | "is" | "is" "not"
+star_expr: "*" expr
+expr: xor_expr ("|" xor_expr)*
+xor_expr: and_expr ("^" and_expr)*
+and_expr: shift_expr ("&" shift_expr)*
+shift_expr: arith_expr (("<<" | ">>") arith_expr)*
+arith_expr: term (("+" | "-") term)*
+term: factor (("*" | "@" | "/" | "%" | "//") factor)*
+factor: ("+" | "-" | "~") factor | power
+power: "await"? atom_expr ("**" factor)?
+atom_expr: atom trailer*
+trailer: "(" _nl arglist_b? ")" | "[" _nl subscriptlist_b "]" | "." NAME
+atom: "(" _nl (yield_expr_b | testlist_comp_b)? ")"
+    | "[" _nl testlist_comp_b? "]"
+    | "{" _nl dictorsetmaker_b? "}"
+    | NAME | NUMBER | STRING+ | "..."
+testlist_comp: (namedexpr_test | star_expr) (comp_for | ("," (namedexpr_test | star_expr))* ","?)
+subscriptlist: subscript ("," subscript)* ","?
+subscript: test | test? ":" test? (":" test?)? | star_expr
+exprlist: (expr | star_expr) ("," (expr | star_expr))* ","?
+testlist: test ("," test)* ","?
+testlist_star_expr: (test | star_expr) ("," (test | star_expr))* ","?
+dictorsetmaker: (dict_item (comp_for | ("," dict_item)* ","?)) | ((test | star_expr) (comp_for | ("," (test | star_expr))* ","?))
+dict_item: test ":" test | "**" expr
+arglist: argument ("," argument)* ","?
+argument: test comp_for? | test ":=" test | test "=" test | "**" test | "*" test
+comp_for: "async"? "for" exprlist "in" or_test (comp_for | comp_if)?
+comp_if: "if" or_test (comp_for | comp_if)?
+yield_expr: "yield" ("from" test | testlist_star_expr)?
+parameters: parameter ("," parameter)* ","?
+parameter: NAME (":" test)? ("=" test)? | "*" (NAME (":" test)?)? | "**" NAME (":" test)? | "/"
+import_as_names: import_as_name ("," import_as_name)* ","?
+import_as_name: NAME ("as" NAME)?
+with_item: test ("as" expr)?
+
+// ---------------------------------------------------------------- TERMINAIS
+
+// Dentro de parênteses: quebras de linha e espaços à vontade.
+_nl: (_LINE_END | _WS)*
+// Fim de linha, com o comentário opcional antes. O comentário só pode começar
+// onde uma quebra é válida (senão o modelo poderia abrir um comentário de onde
+// não há saída).
+_LINE_END: /(#[^\n]*)?\n/
+// Linha em branco ou só de comentário com espaço antes (só no nível de comando).
+_BLANK_LINE: /[ \t\f]+(#[^\n]*)?\n/
+// Nunca casa: só existe para a alternativa sem saída das palavras-chave (codelm.grammar).
+_NEVER: /[^\s\S]/
+// Espaço entre elementos de uma linha, incluindo a continuação explícita (\ + quebra).
+_WS: /([ \t\f]|\\\n)+/
+
+NAME: /[^\W\d]\w*/
+NUMBER: /(0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|([0-9][0-9_]*(\.[0-9_]*)?|\.[0-9][0-9_]*)([eE][+-]?[0-9][0-9_]*)?)[jJlL]?/
+STRING: /[rRbBuUfF]{0,2}("""([^"\\]|\\[\s\S]|"[^"\\]|"\\[\s\S]|""[^"\\]|""\\[\s\S])*("|"")?"""|'''([^'\\]|\\[\s\S]|'[^'\\]|'\\[\s\S]|''[^'\\]|''\\[\s\S])*('|'')?'''|"([^"\\\n]|\\[\s\S])*"|'([^'\\\n]|\\[\s\S])*')/

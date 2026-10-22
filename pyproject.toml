@@ -1,0 +1,46 @@
+[project]
+name = "code-language-model"
+version = "0.1.0"
+description = "An implementation of a small language model trained from scratch to writing python code locally."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=5.1.0",
+    "llguidance>=1.9.1",
+    "numpy>=2.5.4",
+    "pytorch-triton-xpu==3.4.0",
+    "scipy>=1.18.1",
+    "tokenizers>=0.23.3",
+    "torch==2.8.0",
+    "torchao>=0.13,<0.14",
+    "transformers>=5.20.2",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-language-pack>=1.22.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+    "ipywidgets>=8.1.9",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["codelm", "dataprep", "train"]
+
+# PyTorch com suporte a GPUs Intel (dispositivo "xpu").
+[[tool.uv.index]]
+name = "pytorch-xpu"
+url = "https://download.pytorch.org/whl/xpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-xpu" }
+pytorch-triton-xpu = { index = "pytorch-xpu" }
+
+[tool.uv]
+# Só resolve para o ambiente do projeto (as rodas xpu não existem para todos).
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64' and python_version == '3.12'"]
