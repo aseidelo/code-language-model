@@ -11,7 +11,7 @@ from codelm.languages import DATA_DIR
 
 BCD_VERSION = "8.1.6"
 BCD_URL = f"https://cdn.jsdelivr.net/npm/@mdn/browser-compat-data@{BCD_VERSION}/data.json"
-BCD_PATH = DATA_DIR / "external" / f"browser-compat-data-{BCD_VERSION}.json"
+BCD_PATH = DATA_DIR / "mdn-browser-compat-data" / f"browser-compat-data-{BCD_VERSION}.json"
 
 
 def load_bcd() -> dict:

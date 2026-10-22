@@ -5,7 +5,7 @@ filtrados por qualidade e deduplicados. Os arquivos têm vários GB, mas são
 divididos em blocos de 1.000 documentos: lemos só os blocos necessários do
 primeiro arquivo, espalhados ao longo dele, sem baixá-lo inteiro.
 
-Salva ``data/processed/natural/<idioma>/{train,valid}.parquet``.
+Salva ``data/code-language-model/processed/natural/<idioma>/{train,valid}.parquet``.
 
 Uso:
     uv run python -m dataprep.natural_text            # todos os idiomas
@@ -34,11 +34,19 @@ TRAIN_CHARS = 30_000_000
 VALID_CHARS = 1_000_000
 
 
-def download(lang: str) -> dict[str, int]:
-    parquet = pq.ParquetFile(HfFileSystem().open(SOURCES[lang]))
+def open_source(path: str) -> tuple[pq.ParquetFile, list[int]]:
+    """Arquivo parquet remoto e a ordem de leitura dos seus blocos de 1.000 documentos.
+
+    O primeiro bloco da ordem é sempre o da validação.
+    """
+    parquet = pq.ParquetFile(HfFileSystem().open(path))
     n_groups = parquet.metadata.num_row_groups
     # Blocos espalhados pelo arquivo (mais variedade que só os primeiros).
-    order = [i * 97 % n_groups for i in range(n_groups)]
+    return parquet, [i * 97 % n_groups for i in range(n_groups)]
+
+
+def download(lang: str) -> dict[str, int]:
+    parquet, order = open_source(SOURCES[lang])
 
     splits: dict[str, list[dict]] = {"valid": [], "train": []}
     limits = {"valid": VALID_CHARS, "train": TRAIN_CHARS}

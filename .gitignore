@@ -7,7 +7,7 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Dados baixados/gerados (grandes demais para o git)
-data/
+/data
 
 # Ferramentas externas compiladas localmente (llama.cpp)
 third_party/

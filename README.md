@@ -18,8 +18,9 @@ O caminho até aqui:
 
 1. **Dados:** amostras do The Stack (~10 mil arquivos por linguagem), filtradas por
    qualidade, deduplicadas, padronizadas (quebras de linha, tabs, recuos) e
-   divididas em treino/validação por repositório. Mais texto natural do FineWeb
-   nos 6 idiomas.
+   divididas em treino/validação por repositório (Python só se compila em
+   Python 3). Mais texto natural nos 6 idiomas: FineWeb-Edu (inglês) e
+   FineWeb2-HQ (os ~10% de maior qualidade do FineWeb-2) nos demais.
 2. **Tokenizador:** BPE de 16k tokens, com parte do vocabulário fixada a partir das
    gramáticas das linguagens, indentação como tokens e pontuação alinhada à
    gramática.
@@ -29,9 +30,15 @@ O caminho até aqui:
    sintaticamente válidos.
 5. **Arquitetura:** decoder estilo Llama de 42M parâmetros, dimensionado pela
    velocidade de geração na CPU.
+6. **Corpus de pré-treino:** ~1,1 bilhão de tokens no formato do modelo, 89% código
+   (10 linguagens, do the-stack-dedup) e 11% texto natural (~2% por idioma, para o
+   modelo entender os pedidos), embaralhados em sequências de 2048 tokens.
 
-Próximas etapas: pré-treino, ajuste fino nas tarefas, RL com a execução do código
-como recompensa e QAT (treino ciente da quantização) para o modelo final em int4.
+7. **Pré-treino:** uma época sobre o corpus, com QAT idêntico ao int4 do llama.cpp
+   na fase final.
+
+Próximas etapas: ajuste fino nas tarefas (seguir pedidos, descrever código, JSON) e
+RL com a execução do código como recompensa.
 
 # Pastas
 
@@ -46,12 +53,14 @@ src/
 │   ├── grammar.py        máscara guiada por gramática (llguidance)
 │   ├── grammars/         gramáticas Lark (python.lark, json.lark)
 │   ├── sampler.py        amostragem e restrições da resposta
-│   └── model.py          arquitetura e tamanhos do modelo
+│   ├── model.py          arquitetura e tamanhos do modelo
+│   └── quantization.py   QAT: Q4_0/Q8_0 simulados exatamente como no llama.cpp
 ├── dataprep/       download e preparação dos dados
 └── train/          tudo que é treino ou avaliação (tokenizador, modelo, exportação)
 assets/tokenizer/   tokenizador treinado e lista de tokens fixos (versionados)
-notebooks/          exploração e exemplos (ex.: gramatica_sampler.ipynb)
-data/               dados baixados e gerados (fora do git)
+notebooks/          exemplos: gramatica_sampler.ipynb, inferencia_pretreino.ipynb
+data/               link para a pasta datasets/ do volume de dados (fora do git):
+                    um diretório por dataset + code-language-model/ (dados gerados)
 third_party/        llama.cpp compilado localmente (fora do git)
 ```
 
@@ -121,6 +130,26 @@ pesos da memória, então a velocidade é limitada por banda ÷ tamanho dos peso
 - Treino numa Intel Arc B580 (PyTorch `xpu`, bf16, `torch.compile`): ~44 mil
   tokens/s no small, ~1 bilhão de tokens em ~6,5 h.
 
+## Pré-treino
+
+`train/pretrain.py`, na GPU (bf16, `torch.compile`), sobre o corpus de
+`dataprep.pretrain`:
+
+- **Corpus:** ~1,1 bilhão de tokens no formato do modelo, 89% código (10
+  linguagens) e 11% texto natural (~2% por idioma), documentos embaralhados em
+  blocos de 2048 tokens.
+- **Otimização:** AdamW (β = 0,9/0,95, weight decay 0,1 só nas matrizes), corte
+  de gradiente em 1, ~262 mil tokens por passo (acúmulo de gradiente), ~4.200
+  passos por época.
+- **Learning rate WSD:** aquecimento, patamar em 2e-3 e queda linear até 10%
+  nos últimos 20% dos passos.
+- **QAT na fase de queda:** as camadas dos blocos passam a simular pesos `Q4_0`
+  e ativações `Q8_0` **bit a bit iguais ao llama.cpp** (`codelm/quantization.py`,
+  conferido contra a implementação de referência dele). O modelo otimizado no
+  fim do treino é exatamente o que roda na CPU.
+- **Avaliação** periódica com a perda por linguagem e por idioma, e checkpoints
+  retomáveis em `data/code-language-model/checkpoints/<rodada>/`.
+
 ## Sampler
 
 Amostragem comum (temperatura, top-k, top-p) restrita em duas camadas:
@@ -153,19 +182,39 @@ mais novas.
 Dados e tokenizador:
 
 ```bash
-uv run python -m dataprep.download             # código (data/processed/)
-uv run python -m dataprep.natural_text         # texto natural en/es/pt/fr/de/it (data/processed/natural/)
+uv run python -m dataprep.download             # código (data/code-language-model/processed/)
+uv run python -m dataprep.natural_text         # texto natural en/es/pt/fr/de/it
 uv run python -m train.fixed_tokens            # tokens fixos (assets/tokenizer/fixed_tokens.json)
 uv run python -m train.train_tokenizer         # tokenizador BPE (assets/tokenizer/tokenizer.json)
 uv run python -m train.evaluate_tokenizer      # métricas de compressão
 uv run python -m train.evaluate_grammars       # cobertura das gramáticas
 ```
 
+Corpus de pré-treino (~1,1 bilhão de tokens em data/code-language-model/pretrain/):
+
+```bash
+uv run python -m dataprep.pretrain download    # código (the-stack-dedup) e texto (FineWeb-Edu/FineWeb2-HQ)
+uv run python -m dataprep.pretrain pack        # tokeniza no formato do template e embaralha
+uv run python -m dataprep.pretrain check       # valida formato, ida e volta e proporções
+```
+
+Pré-treino (`--tokens` treina com menos dados; a agenda se ajusta sozinha):
+
+```bash
+uv run python -m train.pretrain --run small-v1                     # 1 época, ~8 h
+uv run python -m train.pretrain --run teste --tokens 20000000 \
+    --warmup-steps 10 --eval-every 20 --save-every 40 --log-every 5  # teste, ~10 min
+uv run python -m train.pretrain --run small-v1 --resume            # retoma uma rodada
+```
+
+Para testar o modelo pré-treinado continuando um código com a gramática do Python:
+`notebooks/inferencia_pretreino.ipynb`.
+
 Modelo e exportação:
 
 ```bash
 uv run python -m train.smoke_test --batch 4 --compile    # passos de treino na GPU (bf16 e QAT)
-uv run python -m train.export_gguf --random --size small # GGUF Q4_0/Q8_0 em data/export/
+uv run python -m train.export_gguf --random --size small # GGUF Q4_0/Q8_0 em data/code-language-model/export/
 ```
 
 llama.cpp (exportação e execução na CPU), compilado em `third_party/`:

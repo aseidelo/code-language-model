@@ -1,7 +1,7 @@
 """Baixa e prepara uma amostra de código de cada linguagem.
 
 Para cada linguagem:
-1. baixa ~10 mil arquivos para ``data/raw/<dataset>/<lang>.jsonl``: o arquivo
+1. baixa ~10 mil arquivos para ``data/<dataset>/raw/<lang>.jsonl``: o arquivo
    inteiro do bigcode/the-stack-smol-xl, ou uma amostra do primeiro shard do
    bigcode/the-stack-dedup (JSON e YAML, que não existem no smol-xl);
 2. aplica filtros de qualidade inspirados no StarCoder e padroniza o texto
@@ -9,7 +9,7 @@ Para cada linguagem:
    indentação, quebra de linha final);
 3. remove duplicatas exatas;
 4. separa treino/validação por repositório (o mesmo repo nunca aparece nos dois)
-   e salva em ``data/processed/<lang>/{train,valid}.parquet``.
+   e salva em ``data/code-language-model/processed/<lang>/{train,valid}.parquet``.
 
 Uso:
     uv run python -m dataprep.download                 # todas as linguagens
@@ -17,11 +17,13 @@ Uso:
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import random
 import re
 import shutil
+import warnings
 from collections import Counter
 from pathlib import Path
 
@@ -37,7 +39,6 @@ SOURCES = {
     "the-stack-smol-xl": "bigcode/the-stack-smol-xl",
     "the-stack-dedup": "bigcode/the-stack-dedup",
 }
-RAW_DIR = DATA_DIR / "raw"
 SAMPLE_SIZE = 10_000
 RAW_FIELDS = ("content", "ext", "max_stars_repo_name", "max_stars_repo_path", "max_stars_repo_licenses")
 
@@ -56,7 +57,7 @@ NOT_C_PATTERN = re.compile(r"^\s*(#import\b|@interface\b|@protocol\b|class\s+\w+
 
 def download(lang: str) -> Path:
     language = LANGUAGES[lang]
-    target = RAW_DIR / language.source / f"{lang}.jsonl"
+    target = DATA_DIR / language.source / "raw" / f"{lang}.jsonl"
     if target.exists():
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +106,66 @@ def is_valid_split(repo: str) -> bool:
     return bucket < VALID_FRACTION * 10_000
 
 
+def compiles_as_python3(content: str) -> bool:
+    """Se o código é Python 3 válido (sintaxe), pelo parser do próprio Python."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # avisos de escapes inválidos em strings antigas
+            ast.parse(content)
+    except (SyntaxError, ValueError):
+        return False
+    return True
+
+
+def clean_file(row: dict, lang: str, seen: set[str], stats: Counter) -> dict | None:
+    """Filtra e padroniza um arquivo do The Stack; None se rejeitado (motivo em ``stats``).
+
+    ``seen`` guarda os hashes já aceitos, para remover duplicatas exatas.
+    """
+    content = row["content"]
+    stats["lidos"] += 1
+    path = row.get("max_stars_repo_path") or ""
+    if path.rsplit("/", 1)[-1] in LOCK_FILES:
+        stats["rejeitado: arquivo de lock"] += 1
+        return None
+    # Em Python os blocos dependem da indentação: com tabs e espaços
+    # misturados, a conversão poderia mudar o significado.
+    if lang == "python" and has_mixed_indentation(content):
+        stats["rejeitado: tabs e espaços misturados"] += 1
+        return None
+    content = normalize_code(content)
+    # Blocos com recuo ímpar (1 ou 3 espaços) não cabem na unidade de 2 da
+    # indentação relativa, e a gramática de Python do sampler não os aceita.
+    if lang == "python" and has_odd_indentation(content, lang):
+        stats["rejeitado: indentação ímpar"] += 1
+        return None
+    if reason := rejection_reason(content, lang):
+        stats[f"rejeitado: {reason}"] += 1
+        return None
+    # Python 2 e código quebrado: o modelo aprenderia sintaxe que a gramática do
+    # sampler bloqueia na geração.
+    if lang == "python" and not compiles_as_python3(content):
+        stats["rejeitado: não compila em Python 3"] += 1
+        return None
+    digest = hashlib.sha256(content.strip().encode()).hexdigest()
+    if digest in seen:
+        stats["rejeitado: duplicado"] += 1
+        return None
+    seen.add(digest)
+
+    repo = row.get("max_stars_repo_name") or ""
+    return {
+        "content": content,
+        "lang": lang,
+        "ext": row.get("ext"),
+        "repo": repo,
+        "path": path,
+        "licenses": row.get("max_stars_repo_licenses") or [],
+        "sha256": digest,
+        "split": "valid" if is_valid_split(repo) else "train",
+    }
+
+
 def prepare(lang: str, raw_path: Path) -> Counter:
     stats = Counter()
     seen: set[str] = set()
@@ -112,46 +173,9 @@ def prepare(lang: str, raw_path: Path) -> Counter:
 
     with raw_path.open() as f:
         for line in f:
-            row = json.loads(line)
-            content = row["content"]
-            stats["lidos"] += 1
-
-            path = row.get("max_stars_repo_path") or ""
-            if path.rsplit("/", 1)[-1] in LOCK_FILES:
-                stats["rejeitado: arquivo de lock"] += 1
-                continue
-            # Em Python os blocos dependem da indentação: com tabs e espaços
-            # misturados, a conversão poderia mudar o significado.
-            if lang == "python" and has_mixed_indentation(content):
-                stats["rejeitado: tabs e espaços misturados"] += 1
-                continue
-            content = normalize_code(content)
-            # Blocos com recuo ímpar (1 ou 3 espaços) não cabem na unidade de 2 da
-            # indentação relativa, e a gramática de Python do sampler não os aceita.
-            if lang == "python" and has_odd_indentation(content, lang):
-                stats["rejeitado: indentação ímpar"] += 1
-                continue
-            if reason := rejection_reason(content, lang):
-                stats[f"rejeitado: {reason}"] += 1
-                continue
-            digest = hashlib.sha256(content.strip().encode()).hexdigest()
-            if digest in seen:
-                stats["rejeitado: duplicado"] += 1
-                continue
-            seen.add(digest)
-
-            repo = row.get("max_stars_repo_name") or ""
-            split = "valid" if is_valid_split(repo) else "train"
-            splits[split].append({
-                "content": content,
-                "lang": lang,
-                "ext": row.get("ext"),
-                "repo": repo,
-                "path": path,
-                "licenses": row.get("max_stars_repo_licenses") or [],
-                "sha256": digest,
-            })
-            stats[split] += 1
+            if file := clean_file(json.loads(line), lang, seen, stats):
+                splits[file.pop("split")].append(file)
+    stats.update({split: len(rows) for split, rows in splits.items()})
 
     out_dir = PROCESSED_DIR / lang
     out_dir.mkdir(parents=True, exist_ok=True)

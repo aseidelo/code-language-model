@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# Link para a pasta datasets/ do volume de dados: cada dataset baixado fica numa
+# pasta com o nome dele (the-stack-dedup/, ...), e o que o projeto gera fica em
+# code-language-model/.
 DATA_DIR = PROJECT_ROOT / "data"
+PROJECT_DATA_DIR = DATA_DIR / "code-language-model"
 ASSETS_DIR = PROJECT_ROOT / "assets"
 
 

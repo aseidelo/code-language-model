@@ -14,6 +14,7 @@ Requer o llama.cpp compilado em ``third_party/llama.cpp`` (ver README).
 
 Uso:
     uv run python -m train.export_gguf --random --size small     # modelo aleatório (teste)
+                                                                 # -> data/code-language-model/export/
     uv run python -m train.export_gguf --checkpoint <pasta>       # modelo treinado
 """
 
@@ -27,12 +28,12 @@ from pathlib import Path
 from transformers import LlamaForCausalLM
 
 from codelm.chat_template import EOS
-from codelm.languages import PROJECT_ROOT
+from codelm.languages import PROJECT_DATA_DIR, PROJECT_ROOT
 from codelm.model import PAD, build_model
 from codelm.tokenizer import TOKENIZER_PATH
 
 LLAMA_CPP = PROJECT_ROOT / "third_party" / "llama.cpp"
-EXPORT_DIR = PROJECT_ROOT / "data" / "export"
+EXPORT_DIR = PROJECT_DATA_DIR / "export"
 QUANTIZATIONS = ("Q4_0", "Q8_0")
 
 
