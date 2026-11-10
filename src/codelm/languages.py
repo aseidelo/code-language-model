@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # pasta com o nome dele (the-stack-dedup/, ...), e o que o projeto gera fica em
 # code-language-model/.
 DATA_DIR = PROJECT_ROOT / "data"
-PROJECT_DATA_DIR = DATA_DIR / "code-language-model"
+PROJECT_MODEL_DIR = PROJECT_ROOT / "model"
 ASSETS_DIR = PROJECT_ROOT / "assets"
 
 
@@ -17,7 +17,8 @@ class Language:
     name: str
     # Gramáticas do tree-sitter-language-pack usadas para extrair terminais.
     grammars: tuple[str, ...]
-    # Pasta da linguagem no dataset de origem (data/<stack_dir>/...).
+    # Pasta da linguagem no dataset de origem (data/<stack_dir>/... no The Stack;
+    # a config, como "Shell", no Stack-Edu).
     stack_dir: str
     extensions: tuple[str, ...]
     # Dataset de origem, chave de ``dataprep.download.SOURCES``.
@@ -39,6 +40,8 @@ LANGUAGES: dict[str, Language] = {
         # (aceitar os termos no Hugging Face e fazer ``hf auth login``).
         Language("json", ("json",), "json", (".json",), source="the-stack-dedup"),
         Language("yaml", ("yaml",), "yaml", (".yaml", ".yml"), source="the-stack-dedup"),
+        # Bash vem do Shell do Stack-Edu (dataprep.stack_edu), filtrado por extensão e shebang.
+        Language("bash", ("bash",), "Shell", (".sh", ".bash"), source="stack-edu"),
     ]
 }
 

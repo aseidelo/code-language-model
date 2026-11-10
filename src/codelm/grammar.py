@@ -24,7 +24,7 @@ from pathlib import Path
 import llguidance as llg
 import numpy as np
 
-from codelm.tokenizer import TOKENIZER_PATH
+from codelm.tokenizer import active_tokenizer_path
 
 GRAMMAR_DIR = Path(__file__).parent / "grammars"
 EOS = "<|endoftext|>"
@@ -104,12 +104,17 @@ def grammar_text(lang: str) -> str:
     ])
 
 
-@cache
 def _ll_tokenizer() -> llg.LLTokenizer:
+    """Tokenizador do llguidance para o tokenizador ativo (``codelm.tokenizer.use_tokenizer_of``)."""
+    return _ll_tokenizer_for(str(active_tokenizer_path()))
+
+
+@cache
+def _ll_tokenizer_for(path: str) -> llg.LLTokenizer:
     from codelm.tokenizer import load_tokenizer
 
-    eos = load_tokenizer().token_to_id(EOS)
-    return llg.LLTokenizer(str(TOKENIZER_PATH), eos_token=eos)
+    eos = load_tokenizer(path).token_to_id(EOS)
+    return llg.LLTokenizer(path, eos_token=eos)
 
 
 @cache

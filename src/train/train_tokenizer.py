@@ -5,7 +5,7 @@ Etapas:
    isolados, um operador da gramática por token);
 2. treino BPE no corpus: código (com a indentação já trocada por
    ``<|indent|>``/``<|dedent|>``), com o mesmo volume por linguagem, e cerca de
-   30% de texto natural nos idiomas priorizados;
+   20% de texto natural nos idiomas priorizados, com o inglês pesando mais;
 3. para cada token fixo (e sua versão com espaço antes, ``return`` e
    `` return``) que o BPE não aprendeu, acrescenta no FIM da lista de merges as
    junções que o formam. Merges novos no fim só se aplicam depois de todos os
@@ -31,8 +31,11 @@ from dataprep.corpus import iter_natural_texts, iter_texts
 
 # Mesmo volume por linguagem para nenhuma dominar o vocabulário.
 TRAIN_MAX_CHARS_PER_LANG = 40_000_000
-# ~370M de caracteres de código + 6 x 28M de texto natural = ~30% de texto.
-TRAIN_MAX_CHARS_PER_NATURAL_LANG = 28_000_000
+# Texto natural: o inglês domina o pré-treino v2 (docs/dados-v2.md), então pesa mais
+# aqui também: todo o inglês do corpus pequeno (~34M) e 14M de cada outro idioma.
+# ~420M de caracteres de código + ~104M de texto natural = ~20% de texto.
+TRAIN_MAX_CHARS_PER_NATURAL_LANG = {"en": 34_000_000}
+TRAIN_MAX_CHARS_OTHER_NATURAL_LANG = 14_000_000
 
 
 def training_corpus() -> Iterator[list[str]]:
@@ -41,7 +44,8 @@ def training_corpus() -> Iterator[list[str]]:
         for text in iter_texts(lang, max_chars=TRAIN_MAX_CHARS_PER_LANG):
             yield [t for is_control, t in code_segments(text, lang) if not is_control and t]
     for lang in NATURAL_LANGUAGES:
-        for text in iter_natural_texts(lang, max_chars=TRAIN_MAX_CHARS_PER_NATURAL_LANG):
+        limit = TRAIN_MAX_CHARS_PER_NATURAL_LANG.get(lang, TRAIN_MAX_CHARS_OTHER_NATURAL_LANG)
+        for text in iter_natural_texts(lang, max_chars=limit):
             yield [text]
 
 

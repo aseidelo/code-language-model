@@ -83,6 +83,21 @@ SUPPLEMENTS: dict[str, list[str]] = {
         "crate", "super", "println", "format", "vec", "panic", "assert_eq",
         "unwrap", "clone", "derive", "Debug", "Clone", "Default", "new",
     ],
+    "bash": [
+        # builtins
+        "echo", "printf", "exit", "return", "cd", "pwd", "set", "shift", "source", "read",
+        "test", "true", "false", "eval", "exec", "trap", "wait", "getopts", "alias", "unalias",
+        "break", "continue", "mapfile", "readarray", "type", "command", "builtin", "let",
+        # comandos mais comuns
+        "sudo", "grep", "sed", "awk", "cat", "rm", "cp", "mv", "mkdir", "chmod", "chown",
+        "ls", "find", "xargs", "cut", "sort", "uniq", "head", "tail", "wc", "tr", "tee",
+        "curl", "wget", "tar", "git", "docker", "apt", "yum", "sleep", "kill", "date",
+        "basename", "dirname", "ssh", "scp", "make", "python", "python3", "pip", "npm",
+        "systemctl", "touch", "ln", "which", "whoami", "uname", "env", "bash", "sh",
+        # caminhos e variáveis
+        "dev", "null", "usr", "bin", "etc", "tmp", "home", "HOME", "PATH", "PWD", "USER",
+        "IFS", "BASH_SOURCE", "FUNCNAME", "LINENO", "OPTARG", "OPTIND", "REPLY",
+    ],
     "html": ["html", "DOCTYPE", "charset", "utf-8", "viewport", "stylesheet"],
     "json": ["true", "false", "null"],
     "yaml": ["true", "false", "null", "yes", "no", "on", "off"],

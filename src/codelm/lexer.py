@@ -30,6 +30,15 @@ class LexerSpec:
     # YAML: '#' só abre comentário depois de espaço ou no início da linha, e
     # aspas só abrem string no começo de um valor (não em ``don't``).
     yaml_rules: bool = False
+    # Caracteres que podem vir antes de um comentário de linha; vazio = qualquer um.
+    # No bash, '#' só abre comentário no início de uma palavra (não em $#, ${#x}, ${x#y}).
+    comment_after: str = ""
+    # Delimitadores de string sem escape por ``\\`` (no bash, '...').
+    raw_quotes: tuple[str, ...] = ()
+    # Bash: <<PALAVRA abre um heredoc, texto livre até a linha que é só PALAVRA.
+    heredocs: bool = False
+    # Bash: fora de strings, ``\\`` escapa o caractere seguinte (``cut -d\\"`` não abre string).
+    code_escapes: bool = False
 
 
 SPECS: dict[str, LexerSpec] = {
@@ -47,7 +56,24 @@ SPECS: dict[str, LexerSpec] = {
     "css": LexerSpec(block_comments=(("/*", "*/"),), quotes=('"', "'")),
     "json": LexerSpec(quotes=('"',)),
     "yaml": LexerSpec(line_comments=("#",), quotes=('"', "'"), yaml_rules=True),
+    "bash": LexerSpec(
+        line_comments=("#",), comment_after=" \t\n;&|()", quotes=('"', "'"), multiline_quotes=('"', "'"),
+        raw_quotes=("'",), heredocs=True, code_escapes=True,
+    ),
 }
+
+# Operador de heredoc numa linha de código: <<PALAVRA, <<-PALAVRA, <<'PALAVRA', <<"PALAVRA".
+# O <<< (here-string) não abre heredoc.
+_HEREDOC_WORD = r"[A-Za-z_!][\w.!-]*"
+_HEREDOC = re.compile(rf"(?<!<)<<-?[ \t]*(['\"]?)({_HEREDOC_WORD})\1")
+# Aspas em volta do terminador (<<'EOF', <<"EOF") não abrem string: a de abertura vem
+# logo depois do operador, a de fechamento logo depois da palavra.
+_HEREDOC_QUOTE = re.compile(rf"(?<!<)<<-?[ \t]*(?:$|(['\"]){_HEREDOC_WORD}$)")
+
+
+def _in_arithmetic(code: str) -> bool:
+    """Se o fim de ``code`` está dentro de ``((...))``, onde ``<<`` é deslocamento de bits."""
+    return code.count("((") > code.count("))")
 
 
 class ContextLexer:
@@ -63,6 +89,11 @@ class ContextLexer:
         self.escapes = True
         self.multiline = False
         self.empty_string_closed = ""  # aspa de uma string vazia que acabou de fechar ("")
+        # Heredocs (bash): código da linha atual, heredocs pendentes e a linha do heredoc atual.
+        self.code_line = ""
+        self.pending: list[str] = []  # terminadores dos heredocs abertos, em ordem
+        self.heredoc_line = ""
+        self.code_escaped = False  # o caractere anterior em código foi um \\ não escapado (bash)
 
     @property
     def context(self) -> int:
@@ -86,9 +117,45 @@ class ContextLexer:
                 self._feed_free(ch)
         return self.context
 
+    def _line_end(self) -> None:
+        """Fim de uma linha de código: os heredocs abertos nela começam na próxima linha."""
+        if self.spec.heredocs:
+            self.pending = [m.group(2) for m in _HEREDOC.finditer(self.code_line)
+                            if not _in_arithmetic(self.code_line[: m.start()])]
+            if self.pending:
+                self._enter("heredoc", "", escapes=False)
+                self.heredoc_line = ""
+        self.code_line = ""
+
+    def _feed_heredoc(self, ch: str) -> None:
+        if ch != "\n":
+            self.heredoc_line += ch
+            return
+        word = self.pending[0]
+        # Tolerante como o bash na prática: espaços em volta do terminador e o heredoc
+        # dentro de $(...) ou `...` fechando na mesma linha (EOF) ou EOF`).
+        line = self.heredoc_line.strip(" \t")
+        self.heredoc_line = ""
+        if line in (word, word + ")", word + "`"):
+            self.pending.pop(0)
+            if not self.pending:
+                self.mode = None
+
     def _feed_code(self, ch: str) -> None:
         spec = self.spec
         empty_quote, self.empty_string_closed = self.empty_string_closed, ""
+        escaped, self.code_escaped = self.code_escaped, False
+        if ch == "\n":
+            if not escaped:  # \\ + quebra de linha continua a mesma linha de comando
+                self._line_end()
+            return
+        self.code_line += ch
+        if spec.code_escapes:
+            if escaped:
+                return  # caractere escapado: literal, não abre string nem comentário
+            if ch == "\\":
+                self.code_escaped = True
+                return
 
         for opener, closer in spec.block_comments:
             if self.recent.endswith(opener):
@@ -99,10 +166,16 @@ class ContextLexer:
                 before = self.recent[: -len(marker)]
                 if spec.yaml_rules and before and before[-1] not in " \t\n":
                     continue
+                if spec.comment_after and before and before[-1] not in spec.comment_after:
+                    continue
                 self._enter("line", "\n")
                 return
         if ch not in spec.quotes:
             return
+        if spec.heredocs and (quoted := _HEREDOC_QUOTE.search(self.code_line[:-1])) \
+                and not _in_arithmetic(self.code_line[: quoted.start()]):
+            if quoted.group(1) in (None, ch):
+                return
         if spec.yaml_rules and not self._value_start():
             return
         if spec.triple_quotes and ch in "\"'" and empty_quote == ch:
@@ -111,13 +184,18 @@ class ContextLexer:
         if spec.rust_raw_strings and ch == '"' and (raw := re.search(r"(?:^|\W)b?r(#*)\"$", self.recent)):
             self._enter("string", '"' + raw.group(1), escapes=False)
             return
-        self._enter("string", ch, multiline=ch in spec.multiline_quotes or spec.yaml_rules)
+        self._enter("string", ch, escapes=ch not in spec.raw_quotes,
+                    multiline=ch in spec.multiline_quotes or spec.yaml_rules)
 
     def _feed_free(self, ch: str) -> None:
         self.since += 1
+        if self.mode == "heredoc":
+            self._feed_heredoc(ch)
+            return
         if self.mode == "line":
             if ch == "\n":
                 self.mode = None
+                self._line_end()
             return
         if self.mode == "string":
             if self.escaped:

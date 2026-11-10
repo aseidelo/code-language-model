@@ -38,7 +38,8 @@ O caminho até aqui:
    na fase final.
 
 Próximas etapas: ajuste fino nas tarefas (seguir pedidos, descrever código, JSON) e
-RL com a execução do código como recompensa.
+RL com a execução do código como recompensa. Depois, recomeçar do zero para incluir
+o bash (`docs/bash.md`).
 
 # Pastas
 

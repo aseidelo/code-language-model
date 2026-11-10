@@ -53,7 +53,7 @@ import pyarrow.parquet as pq
 from huggingface_hub import HfApi, hf_hub_download
 
 from codelm.chat_template import EOS, decode_response, pretraining_segments
-from codelm.languages import DATA_DIR, LANGUAGES, NATURAL_LANGUAGES, PROJECT_DATA_DIR
+from codelm.languages import DATA_DIR, LANGUAGES, NATURAL_LANGUAGES, PROJECT_MODEL_DIR
 from codelm.model import CONTEXT_LENGTH
 from codelm.tokenizer import encode_code, encode_segments, load_tokenizer
 from dataprep import natural_text
@@ -62,7 +62,7 @@ from dataprep.download import RAW_FIELDS, SOURCES, clean_file
 
 REPO = SOURCES["the-stack-dedup"]
 CODE_DIR = DATA_DIR / "the-stack-dedup" / "filtered"
-PRETRAIN_DIR = PROJECT_DATA_DIR / "pretrain"
+PRETRAIN_DIR = PROJECT_MODEL_DIR / "pretrain"
 
 CODE_TOKENS = 950_000_000  # + ~120M de texto natural (NATURAL_TOKENS_PER_LANG)
 # Fração dos tokens de código por linguagem: mais peso para as de programação.

@@ -17,9 +17,11 @@ Regras (sem perda: ``decode(encode(texto)) == texto``):
   tokenizador do próprio Python. Seus recuos não indicam blocos:
 
   - linhas em branco;
-  - linhas que começam dentro de uma string ou comentário de várias linhas;
+  - linhas que começam dentro de uma string ou comentário de várias linhas
+    (ou, no bash, dentro de um heredoc);
   - em Python: linhas de continuação (dentro de ``()``, ``[]``, ``{}`` ou
-    depois de ``\\``) e linhas só de comentário.
+    depois de ``\\``) e linhas só de comentário;
+  - no bash: linhas de continuação (depois de ``\\``) e linhas só de comentário.
 
 Codificador e decodificador acompanham o texto com o mesmo lexer
 (``codelm.lexer``) para decidir isso do mesmo jeito. Com linguagem
@@ -69,6 +71,8 @@ class LineTracker:
     def __init__(self, lang: str | None) -> None:
         self.lexer = make_lexer(lang)
         self.python = lang == "python"
+        # Linguagens em que \\ no fim da linha continua o comando e ``#`` abre comentário de linha.
+        self.line_based = lang in ("python", "bash")
         self.depth = 0  # parênteses/colchetes/chaves abertos (Python)
         self.previous = ""  # caractere anterior
         self.backslash = False  # a linha anterior terminou com \ (continuação explícita)
@@ -90,13 +94,13 @@ class LineTracker:
     def continuation(self) -> bool:
         """A linha que começa agora tem recuo literal?"""
         # Só strings e comentários de verdade: no HTML o "texto" entre tags é indentado normalmente.
-        if isinstance(self.lexer, ContextLexer) and self.lexer.mode in ("string", "block"):
+        if isinstance(self.lexer, ContextLexer) and self.lexer.mode in ("string", "block", "heredoc"):
             return True
-        return self.python and (self.depth > 0 or self.backslash)
+        return (self.python and self.depth > 0) or (self.line_based and self.backslash)
 
     def is_comment_start(self, ch: str) -> bool:
-        """Em Python, uma linha que começa com ``#`` (fora de continuação) é só comentário."""
-        return self.python and ch == "#"
+        """Em Python e no bash, uma linha que começa com ``#`` (fora de continuação) é só comentário."""
+        return self.line_based and ch == "#"
 
 
 def _level(line: str) -> int:

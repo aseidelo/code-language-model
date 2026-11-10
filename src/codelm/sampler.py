@@ -58,9 +58,10 @@ def sample(
 class ResponseConstraint:
     """Máscara de cada passo da resposta: cabeçalho, depois a gramática do conteúdo (se houver)."""
 
-    def __init__(self, tokenizer: Tokenizer) -> None:
+    def __init__(self, tokenizer: Tokenizer, use_grammar: bool = True) -> None:
         vocab = tokenizer.get_vocab_size()
         self.tokenizer = tokenizer
+        self.use_grammar = use_grammar
         self.version_id = tokenizer.token_to_id(VERSION)
         self.eos_id = tokenizer.token_to_id(EOS)
         self.kind_ids = {tokenizer.token_to_id(token): kind for kind, token in KIND_TOKENS.items()}
@@ -113,7 +114,8 @@ class ResponseConstraint:
         elif self.state == "kind":
             self.kind = self.kind_ids[token_id]
             grammar_lang = content_lang(self.kind, self.lang) if self.kind != "description" else None
-            self.grammar = GrammarConstraint(grammar_lang) if grammar_lang in available() else None
+            use_grammar = self.use_grammar and grammar_lang in available()
+            self.grammar = GrammarConstraint(grammar_lang) if use_grammar else None
             self.state = "body"
         elif self.state == "body":
             if self.grammar is not None and not self.grammar.consume(token_id):
@@ -127,6 +129,7 @@ def generate(
     tokenizer: Tokenizer,
     prompt_ids: list[int],
     max_tokens: int = 512,
+    use_grammar: bool = True,
     **sampling,
 ) -> list[int]:
     """Gera a resposta a partir dos ids do prompt (``chat_template.encode_prompt``).
@@ -136,7 +139,7 @@ def generate(
     preenchido, prontos para ``chat_template.decode_response``.
     """
     response_start = prompt_ids.index(tokenizer.token_to_id("<|response|>")) + 1
-    constraint = ResponseConstraint(tokenizer)
+    constraint = ResponseConstraint(tokenizer, use_grammar)
     for token_id in prompt_ids[response_start:]:
         constraint.feed(token_id)
 

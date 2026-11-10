@@ -2,9 +2,21 @@
 
 O tokenizador é BPE byte-level com pré-tokenização específica para código.
 Seu vocabulário tem uma parte fixa, definida aqui (tokens de controle e de
-espaço) e em ``assets/tokenizer/fixed_tokens.json`` (terminais das gramáticas
-e vocabulário frequente), e uma parte aprendida do corpus (código e texto
-natural) por ``train.train_tokenizer``.
+espaço) e em ``assets/tokenizer/<versão>/fixed_tokens.json`` (terminais das
+gramáticas e vocabulário frequente), e uma parte aprendida do corpus (código e
+texto natural) por ``train.train_tokenizer``.
+
+Versões (``assets/tokenizer/<versão>/``):
+
+* ``v1``: 10 linguagens, o dos modelos até o pré-treino v1, o A/B, os SFT e os
+  GRPO. Congelado. Esses checkpoints não guardam o tokenizador.
+* ``v2``: 11 linguagens (com bash), o do pré-treino v2 em diante.
+
+Cada checkpoint novo guarda o ``tokenizer.json`` com que foi treinado
+(``train.pretrain.save_checkpoint``). As ferramentas que abrem um checkpoint
+chamam ``use_tokenizer_of(pasta)``: daí em diante ``load_tokenizer()`` devolve
+o tokenizador dele, ou o v1 se ele for antigo. Sem isso, ``load_tokenizer()``
+devolve a versão atual (``TOKENIZER_VERSION``), a dos dados novos.
 
 O código nunca é tokenizado direto: antes, a indentação vira tokens
 ``<|indent|>``/``<|dedent|>`` (``codelm.indentation``). Por isso a sequência é
@@ -14,15 +26,48 @@ escrito no código vira caracteres, nunca o token especial).
 """
 
 import re
+from pathlib import Path
 
 from tokenizers import Regex, Tokenizer, decoders, models, pre_tokenizers
 
 from codelm.indentation import DEDENT, INDENT, Segment, decode_indentation, encode_indentation, normalize_code
-from codelm.languages import ASSETS_DIR, LANGUAGES
+from codelm.languages import ASSETS_DIR, LANGUAGES, PROJECT_MODEL_DIR
 
-TOKENIZER_DIR = ASSETS_DIR / "tokenizer"
+TOKENIZER_ROOT = ASSETS_DIR / "tokenizer"
+TOKENIZER_VERSION = "v2"
+# Arquivos da versão atual (o que train.fixed_tokens e train.train_tokenizer geram).
+TOKENIZER_DIR = TOKENIZER_ROOT / TOKENIZER_VERSION
 FIXED_TOKENS_PATH = TOKENIZER_DIR / "fixed_tokens.json"
 TOKENIZER_PATH = TOKENIZER_DIR / "tokenizer.json"
+# Checkpoints sem tokenizador próprio são de antes do versionamento: v1.
+LEGACY_TOKENIZER_PATH = TOKENIZER_ROOT / "v1" / "tokenizer.json"
+CHECKPOINT_TOKENIZER = "tokenizer.json"
+
+_active_path = TOKENIZER_PATH
+
+
+def checkpoint_tokenizer_path(checkpoint: str | Path) -> Path:
+    """Tokenizador de um checkpoint: o que ele guarda, ou o v1 se ele não guarda.
+
+    ``checkpoint`` é uma pasta, ou um nome relativo a ``model/checkpoints/``
+    (``run/step-00100``, como nos argumentos das ferramentas).
+    """
+    path = Path(checkpoint)
+    if not path.is_absolute():
+        path = PROJECT_MODEL_DIR / "checkpoints" / path
+    own = path / CHECKPOINT_TOKENIZER
+    return own if own.exists() else LEGACY_TOKENIZER_PATH
+
+
+def use_tokenizer_of(checkpoint: str | Path) -> Path:
+    """Passa a usar o tokenizador do checkpoint em ``load_tokenizer()`` (e na gramática)."""
+    global _active_path
+    _active_path = checkpoint_tokenizer_path(checkpoint)
+    return _active_path
+
+
+def active_tokenizer_path() -> Path:
+    return _active_path
 
 
 
@@ -66,6 +111,8 @@ def operators(fixed: dict) -> list[str]:
 def pre_tokenize_pattern(operators: list[str]) -> str:
     """Regex que corta o texto em "palavras" que o BPE nunca atravessa.
 
+    * operador da gramática que começa com ``$`` (``$(``, ``${``), antes dos
+      identificadores, que também podem começar com ``$``;
     * identificador com espaço opcional antes (``_`` e ``$`` fazem parte do nome);
     * um dígito por vez (o primeiro pode levar um espaço antes);
     * um operador da gramática inteiro, ou senão um único caractere de
@@ -74,8 +121,12 @@ def pre_tokenize_pattern(operators: list[str]) -> str:
     * quebras de linha e espaços (o último espaço antes de uma palavra fica com ela).
     """
     alternatives = "".join(re.escape(op) + "|" for op in operators)
+    # Operadores que começam com $ (``$(``, ``${``, ``$((`` do bash; ``${`` das template
+    # strings do JS) vêm antes dos identificadores, que também começam com $ (``$x``).
+    dollar = "|".join(re.escape(op) for op in operators if op.startswith("$"))
     return (
-        r" ?[\p{L}_$][\p{L}\p{N}_$]*"
+        (rf" ?(?:{dollar})|" if dollar else "")
+        + r" ?[\p{L}_$][\p{L}\p{N}_$]*"
         r"| ?\p{N}"
         rf"| ?(?:{alternatives}[^\s\p{{L}}\p{{N}}_$])"
         r"|\s+(?!\S)"
@@ -97,11 +148,12 @@ def build_tokenizer(fixed: dict) -> Tokenizer:
     return tokenizer
 
 
-def load_tokenizer() -> Tokenizer:
-    """Tokenizador treinado do modelo."""
-    if not TOKENIZER_PATH.exists():
-        raise FileNotFoundError(f"{TOKENIZER_PATH} não existe; rode antes: uv run python -m train.train_tokenizer")
-    return Tokenizer.from_file(str(TOKENIZER_PATH))
+def load_tokenizer(path: str | Path | None = None) -> Tokenizer:
+    """Tokenizador ativo (ver ``use_tokenizer_of``), ou o de ``path``."""
+    path = Path(path) if path else _active_path
+    if not path.exists():
+        raise FileNotFoundError(f"{path} não existe; rode antes: uv run python -m train.train_tokenizer")
+    return Tokenizer.from_file(str(path))
 
 
 def code_segments(code: str, lang: str | None) -> list[Segment]:

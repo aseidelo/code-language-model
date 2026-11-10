@@ -14,6 +14,7 @@ Requer o llama.cpp compilado em ``third_party/llama.cpp`` (ver README).
 
 Uso:
     uv run python -m train.export_gguf --random --size small     # modelo aleatório (teste)
+    uv run python -m train.export_gguf --random --arch gemma3    # idem, arquitetura v2
                                                                  # -> data/code-language-model/export/
     uv run python -m train.export_gguf --checkpoint <pasta>       # modelo treinado
 """
@@ -25,22 +26,22 @@ import subprocess
 import sys
 from pathlib import Path
 
-from transformers import LlamaForCausalLM
+from transformers import AutoModelForCausalLM, PreTrainedModel
 
 from codelm.chat_template import EOS
-from codelm.languages import PROJECT_DATA_DIR, PROJECT_ROOT
-from codelm.model import PAD, build_model
-from codelm.tokenizer import TOKENIZER_PATH
+from codelm.languages import PROJECT_MODEL_DIR, PROJECT_ROOT
+from codelm.model import ARCHS, DEFAULT_ARCH, PAD, build_model
+from codelm.tokenizer import active_tokenizer_path, use_tokenizer_of
 
 LLAMA_CPP = PROJECT_ROOT / "third_party" / "llama.cpp"
-EXPORT_DIR = PROJECT_DATA_DIR / "export"
+EXPORT_DIR = PROJECT_MODEL_DIR / "export"
 QUANTIZATIONS = ("Q4_0", "Q8_0")
 
 
-def save_hf(model: LlamaForCausalLM, out_dir: Path) -> None:
-    """Modelo + tokenizador no formato que o conversor do llama.cpp lê."""
+def save_hf(model: PreTrainedModel, out_dir: Path) -> None:
+    """Modelo + tokenizador ativo (``codelm.tokenizer.use_tokenizer_of``) no formato que o conversor lê."""
     model.save_pretrained(out_dir, safe_serialization=True)
-    shutil.copy(TOKENIZER_PATH, out_dir / "tokenizer.json")
+    shutil.copy(active_tokenizer_path(), out_dir / "tokenizer.json")
     config = {"tokenizer_class": "PreTrainedTokenizerFast", "eos_token": EOS, "pad_token": PAD}
     (out_dir / "tokenizer_config.json").write_text(json.dumps(config, indent=1))
 
@@ -48,12 +49,23 @@ def save_hf(model: LlamaForCausalLM, out_dir: Path) -> None:
 def convert_to_gguf(hf_dir: Path, out_file: Path) -> None:
     sys.path.insert(0, str(LLAMA_CPP))
     import convert_hf_to_gguf
-    from conversion import base, llama
+    from conversion import base, gemma, llama
 
     # Nosso pré-tokenizador não está na lista do llama.cpp (e ele não vai usá-lo).
     base.TextModel.get_vocab_base_pre = lambda self, tokenizer: "gpt-2"
     # Vocabulário BPE byte-level (como o do Llama 3), sem tentar o sentencepiece antes.
     llama.LlamaModel.set_vocab = lambda self: self._set_vocab_gpt2()
+
+    # Gemma 3: o llama.cpp assume o padrão 5:1 do Gemma original e o RoPE local
+    # padrão. Gravamos o tipo de cada camada e a base do RoPE local explicitamente.
+    gemma3_params = gemma.Gemma3Model.set_gguf_parameters
+
+    def set_gemma3_params(self) -> None:
+        gemma3_params(self)
+        self.gguf_writer.add_sliding_window_pattern([t == "sliding_attention" for t in self.hparams["layer_types"]])
+        self.gguf_writer.add_rope_freq_base_swa(self.rope_parameters["sliding_attention"]["rope_theta"])
+
+    gemma.Gemma3Model.set_gguf_parameters = set_gemma3_params
     sys.argv = ["convert_hf_to_gguf.py", str(hf_dir), "--outfile", str(out_file), "--outtype", "f16"]
     convert_hf_to_gguf.main()
 
@@ -72,13 +84,17 @@ def main() -> None:
     source.add_argument("--checkpoint", type=Path, help="pasta de um modelo salvo com save_pretrained")
     source.add_argument("--random", action="store_true", help="modelo com pesos aleatórios (para testar o caminho)")
     parser.add_argument("--size", default="small")
+    parser.add_argument("--arch", default=DEFAULT_ARCH, choices=ARCHS, help="arquitetura do modelo aleatório")
     parser.add_argument("--name", help="nome dos arquivos (padrão: o tamanho ou a pasta)")
     args = parser.parse_args()
 
     if not (LLAMA_CPP / "build" / "bin" / "llama-quantize").exists():
         parser.error(f"llama.cpp não compilado em {LLAMA_CPP} (ver README)")
-    name = args.name or (f"{args.size}-aleatorio" if args.random else args.checkpoint.name)
-    model = build_model(args.size) if args.random else LlamaForCausalLM.from_pretrained(args.checkpoint)
+    suffix = "" if args.arch == DEFAULT_ARCH else f"-{args.arch}"
+    name = args.name or (f"{args.size}{suffix}-aleatorio" if args.random else args.checkpoint.name)
+    if not args.random:
+        use_tokenizer_of(args.checkpoint.resolve())  # o do checkpoint (ou o v1, se ele for antigo)
+    model = build_model(args.size, args.arch) if args.random else AutoModelForCausalLM.from_pretrained(args.checkpoint)
 
     hf_dir = EXPORT_DIR / name / "hf"
     hf_dir.mkdir(parents=True, exist_ok=True)

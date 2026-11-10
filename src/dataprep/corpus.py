@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from codelm.languages import PROJECT_DATA_DIR
+from codelm.languages import PROJECT_MODEL_DIR
 
-PROCESSED_DIR = PROJECT_DATA_DIR / "processed"
+PROCESSED_DIR = PROJECT_MODEL_DIR / "processed"
 NATURAL_DIR = PROCESSED_DIR / "natural"
 
 

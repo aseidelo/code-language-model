@@ -1,7 +1,10 @@
 """Pré-treino do modelo no corpus de ``dataprep.pretrain``.
 
-* Dados: blocos de ``CONTEXT_LENGTH`` tokens do ``train.bin`` (documentos já
-  embaralhados e separados por ``<|endoftext|>``), em ordem aleatória por época.
+* Arquitetura: ``--arch llama`` (v1, contexto de 2048) ou ``--arch gemma3`` (v2,
+  atenção local/global, contexto de 8192; ver ``docs/arquitetura-v2.md``).
+* Dados: blocos do tamanho do contexto da arquitetura, tirados do ``train.bin``
+  (documentos já embaralhados e separados por ``<|endoftext|>``), em ordem
+  aleatória por época.
 * Otimização: AdamW, bf16 (autocast), ``torch.compile``, acúmulo de gradiente
   até ``batch_tokens`` por passo, corte de gradiente.
 * Agenda de learning rate WSD: aquecimento linear, patamar constante e queda
@@ -9,15 +12,21 @@
 * QAT nos últimos ``qat_fraction`` dos passos (por padrão, junto com a queda do
   learning rate): as camadas lineares dos blocos passam a simular pesos Q4_0 e
   ativações Q8_0 exatamente como o llama.cpp (``codelm.quantization``).
-* Avaliação periódica na validação, com a perda por linguagem/idioma.
+* Avaliação periódica na validação, com a perda por linguagem/idioma e pelo
+  contexto disponível de cada token (``Evaluator``), em blocos de 8192 para
+  qualquer arquitetura: as duas são comparáveis no mesmo conjunto.
 * Checkpoints em ``data/code-language-model/checkpoints/<run>/``: ``latest/``
   (modelo + otimizador + posição nos dados, para retomar) e ``step-NNNNN/``
-  (só o modelo). Métricas em ``metrics.jsonl``.
+  (só o modelo). Todo checkpoint guarda o ``tokenizer.json`` com que foi
+  treinado (ver ``codelm.tokenizer``). Métricas em ``metrics.jsonl``.
 
 Uso:
     uv run python -m train.pretrain --run small-v1                     # 1 época (~1,1 bilhão de tokens)
     uv run python -m train.pretrain --run teste --tokens 20000000      # rodada curta (agenda completa)
     uv run python -m train.pretrain --run small-v1 --resume            # continua de latest/
+    uv run python -m train.pretrain --run teste-v2 --arch gemma3 --tokens 20000000
+
+Na nuvem (H100 no Modal), ver ``train.modal_pretrain``.
 """
 
 import argparse
@@ -30,23 +39,33 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import LlamaForCausalLM
+from transformers import AutoModelForCausalLM
+from transformers.utils import is_flash_attn_2_available
 
-from codelm.languages import PROJECT_DATA_DIR
-from codelm.model import CONTEXT_LENGTH, build_model
+from codelm.languages import PROJECT_MODEL_DIR
+from codelm.model import ARCHS, CONTEXT_LENGTHS, build_model
 from codelm.quantization import enable_qat
+from codelm.tokenizer import CHECKPOINT_TOKENIZER, active_tokenizer_path, use_tokenizer_of
 from dataprep.pretrain import PRETRAIN_DIR, load_split
 from train.smoke_test import pick_device, synchronize
 
-CHECKPOINT_DIR = PROJECT_DATA_DIR / "checkpoints"
+CHECKPOINT_DIR = PROJECT_MODEL_DIR / "checkpoints"
+# A validação usa sempre blocos deste tamanho. Um modelo de contexto menor é
+# avaliado com janela deslizante (cada token vê de meio contexto a um contexto inteiro).
+EVAL_CONTEXT = max(CONTEXT_LENGTHS.values())
+# Faixas do contexto disponível de cada token: quantos tokens do mesmo documento
+# vêm antes dele dentro do bloco. Acima de 2048, só o contexto longo enxerga.
+CONTEXT_BUCKETS = ((0, 2048), (2048, 4096), (4096, EVAL_CONTEXT))
 
 
 @dataclass
 class Config:
     size: str = "small"
+    arch: str = "llama"  # llama (v1, 2k) ou gemma3 (v2, local/global, 8k)
+    attention: str = "auto"  # auto, sdpa ou flash_attention_2 (ver attention_implementation)
     tokens: int | None = None  # tokens de treino no total (None = 1 época)
     micro_batch: int = 4  # sequências por passada na GPU
-    batch_tokens: int = 262_144  # tokens por passo do otimizador (128 sequências de 2048)
+    batch_tokens: int = 262_144  # tokens por passo do otimizador (128 x 2048 ou 32 x 8192)
     lr: float = 2e-3
     min_lr_ratio: float = 0.1
     warmup_steps: int = 200
@@ -56,18 +75,19 @@ class Config:
     grad_clip: float = 1.0
     log_every: int = 10
     eval_every: int = 250
-    eval_sequences: int = 256
+    eval_sequences: int = 256  # blocos de EVAL_CONTEXT tokens da validação
     save_every: int = 500
     seed: int = 0
     compile: bool = True
 
 
 class TrainBlocks:
-    """Blocos de ``CONTEXT_LENGTH`` tokens em ordem aleatória (nova a cada época), retomáveis."""
+    """Blocos de ``context`` tokens em ordem aleatória (nova a cada época), retomáveis."""
 
-    def __init__(self, seed: int, epoch: int = 0, cursor: int = 0) -> None:
+    def __init__(self, context: int, seed: int, epoch: int = 0, cursor: int = 0) -> None:
         self.tokens, _, _ = load_split("train")
-        self.n_blocks = len(self.tokens) // CONTEXT_LENGTH
+        self.context = context
+        self.n_blocks = len(self.tokens) // context
         self.seed, self.epoch, self.cursor = seed, epoch, cursor
         self.order = np.random.default_rng(seed + epoch).permutation(self.n_blocks)
 
@@ -77,45 +97,94 @@ class TrainBlocks:
             self.order = np.random.default_rng(self.seed + self.epoch).permutation(self.n_blocks)
         blocks = self.order[self.cursor : self.cursor + size]
         self.cursor += size
-        batch = np.stack([self.tokens[b * CONTEXT_LENGTH : (b + 1) * CONTEXT_LENGTH] for b in blocks])
+        batch = np.stack([self.tokens[b * self.context : (b + 1) * self.context] for b in blocks])
         return torch.from_numpy(batch.astype(np.int64))
 
 
 class Evaluator:
-    """Perda na validação, geral e por tipo de documento (linguagem ou idioma)."""
+    """Perda na validação: geral, por tipo de documento e por contexto disponível.
 
-    def __init__(self, sequences: int) -> None:
+    Usa sempre os mesmos blocos de ``EVAL_CONTEXT`` tokens. Se o modelo tem
+    contexto menor, cada bloco é percorrido em janelas de ``context`` tokens que
+    avançam meio contexto; cada janela conta só a sua metade final (a primeira
+    conta tudo). Assim todo token é avaliado uma vez, vendo entre meio e um
+    contexto inteiro de tokens anteriores.
+    """
+
+    def __init__(self, sequences: int, context: int) -> None:
         tokens, starts, kinds = load_split("valid")
         meta = json.loads((PRETRAIN_DIR / "meta.json").read_text())
         self.names = meta["doc_kinds"]
-        # Tipo de documento de cada token.
-        token_kinds = np.repeat(kinds, np.diff(np.append(starts, len(tokens))))
-        n_blocks = len(tokens) // CONTEXT_LENGTH
+        self.context = context
+        self.stride = context // 2
+        if context < EVAL_CONTEXT and (EVAL_CONTEXT - context) % self.stride:
+            raise ValueError(f"contexto {context} não divide o bloco de avaliação {EVAL_CONTEXT}")
+        lengths = np.diff(np.append(starts, len(tokens)))
+        # Tipo de documento e início do documento de cada token.
+        token_kinds = np.repeat(kinds, lengths)
+        doc_start = np.repeat(starts, lengths)
+        n_blocks = len(tokens) // EVAL_CONTEXT
         chosen = np.linspace(0, n_blocks - 1, num=min(sequences, n_blocks)).astype(int)
-        self.inputs = np.stack([tokens[b * CONTEXT_LENGTH : (b + 1) * CONTEXT_LENGTH] for b in chosen]).astype(np.int64)
-        self.kinds = np.stack([token_kinds[b * CONTEXT_LENGTH : (b + 1) * CONTEXT_LENGTH] for b in chosen])
+        self.inputs = np.stack([tokens[b * EVAL_CONTEXT : (b + 1) * EVAL_CONTEXT] for b in chosen]).astype(np.int64)
+        self.kinds = np.stack([token_kinds[b * EVAL_CONTEXT : (b + 1) * EVAL_CONTEXT] for b in chosen])
+        # Contexto disponível: tokens do mesmo documento antes deste, dentro do bloco.
+        position = np.arange(EVAL_CONTEXT)
+        self.available = np.stack([
+            np.minimum(position, b * EVAL_CONTEXT + position - doc_start[b * EVAL_CONTEXT : (b + 1) * EVAL_CONTEXT])
+            for b in chosen
+        ])
+
+    def token_losses(self, model, x: torch.Tensor) -> torch.Tensor:
+        """Perda de cada alvo ``x[:, 1:]``, com janela deslizante se o contexto for menor que o bloco."""
+        def window(w: torch.Tensor) -> torch.Tensor:
+            logits = model(input_ids=w).logits
+            return F.cross_entropy(logits[:, :-1].flatten(0, 1).float(), w[:, 1:].flatten(),
+                                   reduction="none").view(w.shape[0], -1)
+
+        if self.context >= x.shape[1]:
+            return window(x)
+        parts = [window(x[:, : self.context])]
+        for begin in range(self.stride, x.shape[1] - self.context + 1, self.stride):
+            parts.append(window(x[:, begin : begin + self.context])[:, -self.stride :])
+        return torch.cat(parts, dim=1)
 
     @torch.no_grad()
     def __call__(self, model, device: torch.device, micro_batch: int) -> dict[str, float]:
         model.eval()
-        sums = np.zeros(len(self.names))
-        counts = np.zeros(len(self.names))
+        losses = []
         for i in range(0, len(self.inputs), micro_batch):
             x = torch.from_numpy(self.inputs[i : i + micro_batch]).to(device)
             with torch.autocast(device.type, dtype=torch.bfloat16):
-                logits = model(input_ids=x).logits
-            losses = F.cross_entropy(logits[:, :-1].flatten(0, 1).float(), x[:, 1:].flatten(), reduction="none")
-            target_kinds = self.kinds[i : i + micro_batch, 1:].reshape(-1)
-            np.add.at(sums, target_kinds, losses.cpu().numpy())
-            np.add.at(counts, target_kinds, 1)
+                losses.append(self.token_losses(model, x).cpu().numpy())
         model.train()
-        result = {"valid": float(sums.sum() / counts.sum())}
-        code = [i for i, n in enumerate(self.names) if not n.startswith("natural:")]
-        text = [i for i, n in enumerate(self.names) if n.startswith("natural:")]
-        result["valid código"] = float(sums[code].sum() / counts[code].sum())
-        result["valid texto"] = float(sums[text].sum() / counts[text].sum())
-        result.update({f"valid {n}": float(sums[i] / counts[i]) for i, n in enumerate(self.names) if counts[i]})
-        return result
+        loss = np.concatenate(losses).reshape(-1)
+        kinds = self.kinds[:, 1:].reshape(-1)
+        available = self.available[:, 1:].reshape(-1)
+
+        def mean(mask: np.ndarray) -> float | None:
+            return float(loss[mask].mean()) if mask.any() else None
+
+        is_text = np.isin(kinds, [i for i, n in enumerate(self.names) if n.startswith("natural:")])
+        result = {"valid": float(loss.mean()), "valid código": mean(~is_text), "valid texto": mean(is_text)}
+        result.update({f"valid {n}": mean(kinds == i) for i, n in enumerate(self.names)})
+        for lo, hi in CONTEXT_BUCKETS:
+            in_bucket = (available >= lo) & (available < hi)
+            result[f"valid ctx {lo // 1024}k-{hi // 1024}k"] = mean(in_bucket)
+            result[f"valid código ctx {lo // 1024}k-{hi // 1024}k"] = mean(in_bucket & ~is_text)
+        return {k: v for k, v in result.items() if v is not None}
+
+
+def attention_implementation(cfg: Config, device: torch.device) -> str:
+    """``auto``: FlashAttention 2 em CUDA (se o pacote ``flash-attn`` existe), ``sdpa`` no resto.
+
+    Na H100 o ``sdpa`` cai no kernel "memory-efficient" da A100, que não aproveita
+    a janela local: a Gemma 3 em 8k fazia ~120k tokens/s. Com o FlashAttention 2,
+    que tem janela local nativa, faz ~500k (``train.attention_check``). Na B580
+    (XPU) fica o ``sdpa``.
+    """
+    if cfg.attention != "auto":
+        return cfg.attention
+    return "flash_attention_2" if device.type == "cuda" and is_flash_attn_2_available() else "sdpa"
 
 
 def learning_rate(step: int, total: int, cfg: Config) -> float:
@@ -142,6 +211,7 @@ def save_checkpoint(run_dir: Path, model, optimizer, state: dict, full: bool) ->
     tmp = run_dir / f"{name}.tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     model.save_pretrained(tmp, safe_serialization=True)
+    shutil.copy(active_tokenizer_path(), tmp / CHECKPOINT_TOKENIZER)
     if full:
         torch.save(optimizer.state_dict(), tmp / "optimizer.pt")
     (tmp / "state.json").write_text(json.dumps(state, indent=1))
@@ -170,6 +240,7 @@ def main() -> None:
     if args.resume:
         state = json.loads((run_dir / "latest" / "state.json").read_text())
         cfg = Config(**state["config"])
+        use_tokenizer_of(run_dir / "latest")
     else:
         if (run_dir / "latest").exists():
             parser.error(f"a rodada {args.run} já existe; use --resume ou outro nome")
@@ -178,17 +249,27 @@ def main() -> None:
 
     device = pick_device()
     torch.manual_seed(cfg.seed)
-    data = TrainBlocks(cfg.seed, state["epoch"], state["cursor"])
-    evaluator = Evaluator(cfg.eval_sequences)
-    tokens = cfg.tokens or data.n_blocks * CONTEXT_LENGTH
-    accum = cfg.batch_tokens // (cfg.micro_batch * CONTEXT_LENGTH)
-    total_steps = tokens // (accum * cfg.micro_batch * CONTEXT_LENGTH)
+    if cfg.arch not in ARCHS:
+        parser.error(f"arquitetura desconhecida: {cfg.arch} (opções: {', '.join(ARCHS)})")
+    context = CONTEXT_LENGTHS[cfg.arch]
+    data = TrainBlocks(context, cfg.seed, state["epoch"], state["cursor"])
+    evaluator = Evaluator(cfg.eval_sequences, context)
+    tokens = cfg.tokens or data.n_blocks * context
+    accum = cfg.batch_tokens // (cfg.micro_batch * context)
+    if accum < 1 or cfg.batch_tokens % (cfg.micro_batch * context):
+        parser.error(f"batch_tokens={cfg.batch_tokens} não é múltiplo de micro_batch x contexto = {cfg.micro_batch * context}")
+    total_steps = tokens // (accum * cfg.micro_batch * context)
     qat_start = int(total_steps * (1 - cfg.qat_fraction)) if cfg.qat_fraction > 0 else total_steps + 1
 
     if args.resume:
-        model = LlamaForCausalLM.from_pretrained(run_dir / "latest").to(device)
+        model = AutoModelForCausalLM.from_pretrained(run_dir / "latest").to(device)
     else:
-        model = build_model(cfg.size).to(device)
+        model = build_model(cfg.size, cfg.arch).to(device)
+    attention_name = attention_implementation(cfg, device)
+    model.set_attn_implementation(attention_name)
+    # Sem cache de K/V no treino: ele só serve para gerar, e com o FlashAttention
+    # fazia o torch.compile recompilar até o limite (e voltar a rodar sem compilar).
+    model.config.use_cache = False
     if state["qat"]:
         enable_qat(model.model.layers)
     optimizer = make_optimizer(model, cfg)
@@ -197,8 +278,8 @@ def main() -> None:
     compiled = torch.compile(model) if cfg.compile else model
 
     params = sum(p.numel() for p in model.parameters())
-    print(f"rodada {args.run} | {device} | modelo {cfg.size} ({params / 1e6:.1f}M) | {total_steps:,} passos de "
-          f"{accum * cfg.micro_batch} x {CONTEXT_LENGTH} tokens | QAT a partir do passo {qat_start:,}")
+    print(f"rodada {args.run} | {device} | modelo {cfg.arch} {cfg.size} ({params / 1e6:.1f}M, {attention_name}) | {total_steps:,} passos de "
+          f"{accum * cfg.micro_batch} x {context} tokens | QAT a partir do passo {qat_start:,}")
     print(f"configuração: {asdict(cfg)}")
     metrics = (run_dir / "metrics.jsonl").open("a")
 
@@ -233,13 +314,13 @@ def main() -> None:
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         state.update(step=step + 1, epoch=data.epoch, cursor=data.cursor)
-        window_tokens += accum * cfg.micro_batch * CONTEXT_LENGTH
+        window_tokens += accum * cfg.micro_batch * context
 
         if state["step"] % cfg.log_every == 0 or state["step"] == total_steps:
             synchronize(device)
             loss_value = float(loss_sum)
             speed = window_tokens / (time.time() - window_start)
-            eta = (total_steps - state["step"]) * accum * cfg.micro_batch * CONTEXT_LENGTH / speed
+            eta = (total_steps - state["step"]) * accum * cfg.micro_batch * context / speed
             print(f"passo {state['step']:>6,}/{total_steps:,} | loss {loss_value:.3f} | lr {lr:.2e} | "
                   f"grad {float(grad_norm):.2f} | {speed:,.0f} tok/s | faltam {eta / 3600:.1f} h", flush=True)
             log({"step": state["step"], "loss": loss_value, "lr": lr, "grad_norm": float(grad_norm),
@@ -248,7 +329,7 @@ def main() -> None:
 
         if state["step"] % cfg.eval_every == 0 or state["step"] == total_steps:
             result = evaluator(compiled, device, cfg.micro_batch)
-            main_keys = ["valid", "valid código", "valid texto"]
+            main_keys = ["valid", "valid código", "valid texto", *(k for k in result if k.startswith("valid ctx"))]
             print("  avaliação: " + " | ".join(f"{k} {result[k]:.3f}" for k in main_keys))
             print("  por tipo:  " + " | ".join(f"{k.removeprefix('valid ')} {v:.2f}" for k, v in result.items() if k not in main_keys))
             log({"step": state["step"], **result})
