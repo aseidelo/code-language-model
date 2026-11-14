@@ -6,6 +6,9 @@ Dois modos:
   enunciado do HumanEval (assinatura e docstring) no formato do pré-treino
   (``<|lang:python|>`` + ``<|code|>``), sem fechar os blocos, e o modelo continua o
   corpo. A continuação para no ``<|endoftext|>`` ou nas sequências de parada do paper.
+  Com ``--suites``, também o MultiPL-E (``eval.multipl_e``): ``javascript``,
+  ``typescript``, ``java``, ``rust``, ``bash`` (HumanEval traduzido) e
+  ``mbpp-<linguagem>`` (MBPP traduzido), cada um com as próprias sequências de parada.
 * ``chat``: o formato do SFT, com a máscara de gramática (os mesmos prompts de
   ``eval.benchmark``).
 
@@ -15,12 +18,15 @@ O pass@k usa o estimador sem viés do paper: ``n`` amostras por problema, ``c`` 
 
 Uso:
     uv run python -m eval.passk --checkpoint base-v1/step-04227 --mode completar
+    uv run python -m eval.passk --checkpoint base-v2/step-43938 --mode completar --plan 0.0:1 \\
+        --suites javascript typescript java rust bash
     uv run python -m eval.passk --checkpoint base-ex-v3/step-00762 --mode chat \\
         --plan 0.2:20,0.4:20,0.6:20,0.8:20,1.0:20
 """
 
 import argparse
 import json
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -32,6 +38,7 @@ from codelm.chat_template import CODE, EOS, decode_response, pretraining_segment
 from codelm.indentation import DEDENT, decode_indentation
 from codelm.model import PAD
 from codelm.tokenizer import decode_segments, encode_segments, load_tokenizer, use_tokenizer_of
+from eval import multipl_e
 from eval.benchmark import humaneval, mbpp
 from eval.sandbox import passes, syntax_ok
 from eval.sft_samples import EVAL_DIR
@@ -52,16 +59,29 @@ def pass_at_k(n: int, c: int, k: int) -> float:
 
 # --- modo completar -----------------------------------------------------------
 
-def completion_problems(tokenizer) -> list[dict]:
+def completion_problem(tokenizer, suite: str, id: str, lang: str, prompt: str, tests: str, stop) -> dict:
+    segments = pretraining_segments(lang, prompt)
+    while segments[-1][1] in (EOS, DEDENT):  # o corpo continua dentro da função
+        segments.pop()
+    body = segments[[s[1] for s in segments].index(CODE) + 1 :]
+    return {"suite": suite, "id": id, "lang": lang, "ids": encode_segments(tokenizer, segments), "body": body,
+            "prefix": decode_indentation(body, lang), "preamble": "", "tests": tests, "stop": tuple(stop)}
+
+
+def completion_problems(tokenizer, suites: list[str]) -> list[dict]:
+    """``humaneval`` (Python, o original) e suítes do MultiPL-E: ``<linguagem>`` ou ``mbpp-<linguagem>``."""
     problems = []
-    for row in load_dataset("openai/openai_humaneval", split="test"):
-        segments = pretraining_segments("python", row["prompt"])
-        while segments[-1][1] in (EOS, DEDENT):  # o corpo continua dentro da função
-            segments.pop()
-        body = segments[[s[1] for s in segments].index(CODE) + 1 :]
-        problems.append({"suite": "humaneval", "id": row["task_id"], "ids": encode_segments(tokenizer, segments),
-                         "body": body, "prefix": decode_indentation(body, "python"), "preamble": "",
-                         "tests": f"{row['test']}\ncheck({row['entry_point']})"})
+    for suite in suites:
+        if suite == "humaneval":
+            for row in load_dataset("openai/openai_humaneval", split="test"):
+                problems.append(completion_problem(tokenizer, suite, row["task_id"], "python", row["prompt"],
+                                                   f"{row['test']}\ncheck({row['entry_point']})", STOP))
+            continue
+        source, lang = ("mbpp", suite.removeprefix("mbpp-")) if suite.startswith("mbpp-") else ("humaneval", suite)
+        if (missing := multipl_e.missing_tools(lang)):
+            raise SystemExit(f"{suite}: faltam ferramentas: {missing}")
+        for p in multipl_e.problems(lang, source):
+            problems.append(completion_problem(tokenizer, suite, p["id"], lang, p["prompt"], p["tests"], p["stop"]))
     return problems
 
 
@@ -70,11 +90,11 @@ def complete_code(tokenizer, problem: dict, generated: list[int]) -> str | None:
     eos = tokenizer.token_to_id(EOS)
     if eos in generated:
         generated = generated[: generated.index(eos)]
-    full = decode_indentation(problem["body"] + decode_segments(tokenizer, generated), "python")
+    full = decode_indentation(problem["body"] + decode_segments(tokenizer, generated), problem["lang"])
     if not full.startswith(problem["prefix"]):
         return None
     completion = full[len(problem["prefix"]) :]
-    cut = min([i for i in (completion.find(s) for s in STOP) if i >= 0], default=len(completion))
+    cut = min([i for i in (completion.find(s) for s in problem["stop"]) if i >= 0], default=len(completion))
     return problem["prefix"] + completion[:cut]
 
 
@@ -152,8 +172,8 @@ def stop_check(tokenizer, problems: list[dict], chunk: list[tuple[int, int]]):
     """Para a sequência quando a continuação já tem uma sequência de parada."""
     def done(n: int, ids: list[int]) -> bool:
         problem = problems[chunk[n][0]]
-        full = decode_indentation(problem["body"] + decode_segments(tokenizer, ids), "python")
-        return any(s in full[len(problem["prefix"]) :] for s in STOP)
+        full = decode_indentation(problem["body"] + decode_segments(tokenizer, ids), problem["lang"])
+        return any(s in full[len(problem["prefix"]) :] for s in problem["stop"])
     return done
 
 
@@ -162,7 +182,10 @@ def score_all(problems: list[dict], codes: list[list[str | None]]) -> list[int]:
     unique = {(i, code) for i, group in enumerate(codes) for code in group if code is not None}
     def run(item):
         i, code = item
-        return item, syntax_ok(code) and passes(problems[i]["preamble"], code, problems[i]["tests"])
+        problem = problems[i]
+        if problem.get("lang", "python") != "python":
+            return item, multipl_e.run_program(problem["lang"], f"{code}\n{problem['tests']}")
+        return item, syntax_ok(code) and passes(problem["preamble"], code, problem["tests"])
     with ThreadPoolExecutor(8) as pool:
         verdict = dict(pool.map(run, unique))
     return [sum(verdict.get((i, code), False) for code in group if code is not None) for i, group in enumerate(codes)]
@@ -177,13 +200,18 @@ def main() -> None:
     parser.add_argument("--max-tokens", type=int, default=300)
     parser.add_argument("--batch", type=int, default=96, help="sequências por lote para 768 tokens")
     parser.add_argument("--limit", type=int, help="só os primeiros problemas de cada conjunto (teste)")
+    parser.add_argument("--suites", nargs="+", default=["humaneval"],
+                        help="modo completar: humaneval e/ou MultiPL-E (javascript, typescript, java, rust, bash, "
+                             "mbpp-<linguagem>); 'todos' = humaneval + as 5 linguagens do MultiPL-E HumanEval")
     args = parser.parse_args()
+    if args.suites == ["todos"]:
+        args.suites = ["humaneval", "javascript", "typescript", "java", "rust", "bash"]
     plan = args.plan or ("0.2:20,0.8:100" if args.mode == "completar" else "0.2:20,0.4:20,0.6:20,0.8:20,1.0:20")
 
     use_tokenizer_of(args.checkpoint)
     tokenizer, device = load_tokenizer(), pick_device()
     if args.mode == "completar":
-        problems = completion_problems(tokenizer)
+        problems = completion_problems(tokenizer, args.suites)
     else:
         problems = humaneval(tokenizer) + mbpp(tokenizer)
     if args.limit:
@@ -192,14 +220,16 @@ def main() -> None:
     model = load_model(CHECKPOINT_DIR / args.checkpoint, device).eval()
     print(f"{args.checkpoint} | modo {args.mode} | {len(problems)} problemas | plano {plan}", flush=True)
 
-    path = EVAL_DIR / "passk" / f"{args.checkpoint.replace('/', '-')}-{args.mode}.json"
+    suffix = "" if args.mode == "chat" or args.suites == ["humaneval"] else "-" + "-".join(args.suites)
+    path = EVAL_DIR / "passk" / f"{args.checkpoint.replace('/', '-')}-{args.mode}{suffix}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     results = json.loads(path.read_text()) if path.exists() and not args.limit else {}
     for item in plan.split(","):
         temperature, samples = float(item.split(":")[0]), int(item.split(":")[1])
         codes = generate(model, tokenizer, problems, args.mode, device, temperature, samples, args.max_tokens, args.batch)
         correct = score_all(problems, codes)
-        entry = {"samples": samples, "correct": dict(zip((p["id"] for p in problems), correct))}
+        # O id do MultiPL-E se repete entre linguagens: a chave leva o conjunto.
+        entry = {"samples": samples, "correct": {f"{p['suite']}:{p['id']}": c for p, c in zip(problems, correct)}}
         for suite in dict.fromkeys(p["suite"] for p in problems):
             hits = [c for p, c in zip(problems, correct) if p["suite"] == suite]
             entry[suite] = {f"pass@{k}": float(np.mean([pass_at_k(samples, c, k) for c in hits])) for k in KS if k <= samples}
@@ -209,6 +239,12 @@ def main() -> None:
         if not args.limit:
             path.write_text(json.dumps(results, indent=1))
     print(f"gravado em {path}" if not args.limit else "teste: nada gravado")
+    if not args.limit:
+        # o relatório da rodada: o que foi avaliado nela, com o mesmo nome do JSON
+        from reports.benchmark import from_passk, passk_filename, render
+        command = "uv run python -m eval.passk " + " ".join(sys.argv[1:])
+        data = from_passk(path, command=command, hardware=str(device))
+        print(f"relatório: {render(data, filename=passk_filename(path))}")
 
 
 if __name__ == "__main__":

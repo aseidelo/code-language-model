@@ -25,6 +25,7 @@ dos segmentos é sempre tokenizado como texto comum (um ``<|endoftext|>``
 escrito no código vira caracteres, nunca o token especial).
 """
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -66,8 +67,20 @@ def use_tokenizer_of(checkpoint: str | Path) -> Path:
     return _active_path
 
 
+def use_tokenizer(path: str | Path) -> Path:
+    """Passa a usar o tokenizador em ``path`` em ``load_tokenizer()`` (e na gramática)."""
+    global _active_path
+    _active_path = Path(path)
+    return _active_path
+
+
 def active_tokenizer_path() -> Path:
     return _active_path
+
+
+def tokenizer_sha256(path: str | Path) -> str:
+    """Identidade de um tokenizador: o hash do ``tokenizer.json``."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 

@@ -150,15 +150,33 @@ Filtros em `dataprep.download`: shebang de outro interpretador e `<<-` (depende 
 - A perda nas soluções do HumanEval e do MBPP (`eval.solution_loss`, em bits por byte) e
   o pass@k (`eval.passk`) continuam como métricas principais.
 
-## Pipeline (a detalhar)
+## Pipeline
 
 1. Tokenizer: `bash` em `codelm/languages.py`, tokens fixos e tokenizer refeitos.
 2. Download e filtro: Stack-Edu (opção A) para 7 linguagens; the-stack-dedup para HTML,
    CSS, JSON e YAML; FineWeb-Edu para o inglês; FineWeb2-HQ para es/pt/fr/de/it. Roda
    na máquina local: é rede e CPU.
-3. `pack`: o mesmo formato de hoje, com a mistura nova.
-4. `check`: o mesmo de hoje.
-5. Upload para o volume do Modal: ~20 GB de `train.bin` para 10B tokens.
+3. `pack` (`python -m dataprep.pretrain pack`): mesmo formato de documento do v1, em
+   `model/pretrain-v2/`. Roda em duas fases para não carregar ~23 GB na memória: cada
+   parquet vira uma parte tokenizada em `parts/` (12 processos, retomável), e depois os
+   documentos de cada split são embaralhados e copiados para `{split}.bin`. Grava também
+   os bytes UTF-8 de cada documento (`{split}.bytes.npy`) e o hash do tokenizer no
+   `meta.json`. Splits: `train`, `valid` (2.000 documentos por tipo da validação v2) e
+   `valid-v1` (a validação do v1 retokenizada, para comparar modelos v1 e v2 em bits por
+   byte).
+4. `check`: o mesmo de antes, por pasta (`--data pretrain` confere o v1).
+5. Upload para o volume do Modal (`modal_pretrain.py::upload`, padrão `pretrain-v2`).
+
+O `train.pretrain` ganhou `--data` (padrão `pretrain-v2`; rodadas antigas retomam do
+v1). Ele usa o tokenizer com que os dados foram empacotados e recusa um checkpoint de
+outro tokenizer. A validação passou a sair também em bits por byte (`bpb`, `bpb código`,
+`bpb <tipo>`): cada token conta com a fração média de bytes do seu documento.
+
+**Decisão (2026-11-10): usar todo o corpus baixado, ~11,5B tokens, em vez de cortar em
+10B.** O código do Stack-Edu rende menos caracteres por token do que a estimativa, que
+veio da validação do The Stack v1: Python 2,80 contra 3,27, TypeScript 2,98 contra 3,25,
+Java 3,14 contra 3,45, YAML 2,62 contra 3,10. Por isso o download passou da meta em
+tokens, e o Python sobe de 35% para ~38%.
 
 Disco: o SSD tem ~390 GB livres. Os dados brutos e filtrados cabem com folga.
 
@@ -182,11 +200,27 @@ A ida e volta funciona em 100% da validação das 11 linguagens. As gramáticas 
 começam com `$` (`$(`, `${`, `$((`) vêm antes dos identificadores e viram um token só.
 Antes eles nunca podiam virar um token, porque o `$` abria um identificador.
 
+**Passo 2 (download e filtro): concluído em 2026-11-10**, em ~5 h. Caracteres de treino
+filtrados do Stack-Edu (meta entre parênteses): python 12,21 (12,02) G, javascript 2,32
+(2,28), typescript 2,77 (2,73), java 2,91 (2,90), c 2,00 (1,95), rust 1,90 (1,86), bash
+0,83 (0,81). Falharam 51 de ~10,7 milhões de arquivos. Ocupa 11 GB em
+`data/stack-edu/filtered/`. O Python rodou em 6 processos
+(`python -m dataprep.stack_edu python --shards 6 --workers 48`), porque um processo só
+ficava limitado pela CPU em ~130 arquivos/s; com 6, ~610/s.
+
+**Passos 3 e 4 (pack e check): concluídos em 2026-11-10.** `model/pretrain-v2/`: treino com
+11.518.166.229 tokens em 11,4 milhões de documentos (23 GB). Python 37,9%, inglês 8,2%, TypeScript
+8,1%, Java 8,0%, JavaScript 7,1%, C 6,7%, Rust 5,7%, YAML 4,3%, HTML 3,8%, Bash 2,9%, CSS 2,7%,
+JSON 2,6% e 0,4% para cada um dos outros cinco idiomas. A validação v2 tem 27,3M tokens e a
+`valid-v1`, 19,9M. O `check` não achou problema em nenhum split, e a gramática do Python aceitou
+todos os documentos sorteados. O `pack` levou ~40 min com 12 processos. As partes
+intermediárias (`parts/`, 23 GB) podem ser apagadas.
+
+O `pack` deve rodar com uma thread do `tokenizers` por processo (o código já fixa
+`RAYON_NUM_THREADS=1`). Sem isso, a primeira tentativa ficou ~6× mais lenta.
+
 **Pendente para os próximos passos:**
 
-- o `pack` deve gravar o hash do tokenizer no `meta.json`, e o `train.pretrain` deve
-  conferir que os dados batem com o tokenizer;
-- a validação do pré-treino em bits por byte;
 - o `train.sft` e o `train.grpo` carregam `LlamaForCausalLM` e precisam de
   `AutoModelForCausalLM` para a Gemma 3 (antes do SFT do v2);
 - os notebooks chamam `load_tokenizer()`, que agora dá o v2; para abrir modelos antigos

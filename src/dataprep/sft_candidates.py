@@ -48,14 +48,15 @@ from huggingface_hub import get_session
 from codelm.languages import LANGUAGES
 from codelm.tokenizer import load_tokenizer
 from dataprep.corpus import iter_natural_texts
-from dataprep.pretrain import CODE_DIR, chars_per_token
+from dataprep.pretrain import CODE_DIR, PRETRAIN_DIR, chars_per_token, code_dir, load_meta
 from dataprep.sft_mix import SFT_DIR
 
 UNITS_DIR = SFT_DIR / "units"
+UNITS_V2_DIR = SFT_DIR / "v2" / "units"
 REPORT_DIR = SFT_DIR / "candidates"
 
 LEVELS = {"facil": 256, "medio": 1024, "dificil": 4096}
-DOC_LANGS = ("python", "javascript", "typescript", "java", "c", "rust")
+DOC_LANGS = ("python", "javascript", "typescript", "java", "c", "rust", "bash")
 MIN_FUNCTION_TOKENS = 16
 
 
@@ -77,6 +78,15 @@ def load_chars_per_token() -> dict[str, float]:
     return ratios
 
 
+def load_chars_per_token_v2() -> dict[str, float]:
+    """Caracteres por token no corpus v2 com o tokenizador v2 (bytes UTF-8 por token do pack)."""
+    train = load_meta(PRETRAIN_DIR)["splits"]["train"]
+    ratios = {k: train["bytes_per_kind"][k] / train["tokens_per_kind"][k]
+              for k in train["tokens_per_kind"] if not k.startswith("natural:")}
+    ratios["natural"] = train["bytes_per_kind"]["natural:en"] / train["tokens_per_kind"]["natural:en"]
+    return ratios
+
+
 # --- corpus -----------------------------------------------------------------
 
 FUNCTION_NODES = {
@@ -86,6 +96,7 @@ FUNCTION_NODES = {
     "java": {"method_declaration", "constructor_declaration"},
     "c": {"function_definition"},
     "rust": {"function_item"},
+    "bash": {"function_definition"},
 }
 # Funções atribuídas a variáveis: ``const f = (x) => ...``.
 FUNCTION_VALUES = {"arrow_function", "function_expression", "function"}
@@ -134,6 +145,8 @@ def preceding_doc(anchor, lang: str) -> str | None:
         doc = texts[-1] if texts[-1].startswith("/**") else None
     elif lang == "rust":
         doc = "\n".join(t for t in texts if t.startswith(("///", "/**"))) or None
+    elif lang == "bash":  # comentários # colados, sem shebang
+        doc = "\n".join(t for t in texts if not t.startswith("#!")) or None
     else:  # C: qualquer comentário colado (não há convenção única)
         doc = "\n".join(texts)
     return doc
@@ -159,6 +172,8 @@ def clean_doc(raw: str, lang: str) -> str:
         return inspect.cleandoc(re.sub(r'^[rRuUbB]*("""|\'\'\'|"|\')|("""|\'\'\'|"|\')$', "", raw.strip()))
     lines = []
     for line in raw.splitlines():
+        if lang == "bash":
+            line = re.sub(r"^\s*#+", "", line)
         line = re.sub(r"^\s*(/\*+|\*+/|\*+(?!/)|//[/!]?)", "", line)
         line = re.sub(r"\*+/\s*$", "", line).rstrip()
         # Tira linhas só de -----, =====; cercas ``` e fechamentos como }); fazem parte dos exemplos.
@@ -248,9 +263,8 @@ def extract_functions(content: str, lang: str) -> list[dict]:
     return functions
 
 
-def process_part(task: tuple[str, str]) -> tuple[str, list[dict], Counter]:
-    lang, path = task
-    ratios = load_chars_per_token()
+def process_part(task: tuple[str, str, dict]) -> tuple[str, list[dict], Counter]:
+    lang, path, ratios = task
     table = pq.read_table(path, columns=["content", "repo", "path", "licenses"]).to_pylist()
     stats: Counter = Counter()
     units, seen = [], set()
@@ -274,11 +288,15 @@ def process_part(task: tuple[str, str]) -> tuple[str, list[dict], Counter]:
     return lang, units, stats
 
 
-def corpus(langs: list[str]) -> None:
-    load_chars_per_token()  # calcula o cache antes de abrir os processos
-    UNITS_DIR.mkdir(parents=True, exist_ok=True)
+def corpus(langs: list[str], v2: bool = False) -> None:
+    """Extrai as funções do corpus v1 (``units/``) ou do corpus v2 (``v2/units/``)."""
+    ratios = load_chars_per_token_v2() if v2 else load_chars_per_token()
+    units_dir = UNITS_V2_DIR if v2 else UNITS_DIR
+    report_path = units_dir / "corpus.json" if v2 else REPORT_DIR / "corpus.json"
+    units_dir.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    tasks = [(lang, str(p)) for lang in langs for p in sorted((CODE_DIR / lang).glob("train-*.parquet"))]
+    tasks = [(lang, str(p), ratios) for lang in langs
+             for p in sorted((code_dir(lang) if v2 else CODE_DIR / lang).glob("train-*.parquet"))]
     stats: dict[str, Counter] = defaultdict(Counter)
     repos: dict[str, set] = defaultdict(set)
     writers: dict[str, pq.ParquetWriter] = {}
@@ -292,14 +310,14 @@ def corpus(langs: list[str]) -> None:
             if units:
                 table = pa.Table.from_pylist(units)
                 if lang not in writers:
-                    writers[lang] = pq.ParquetWriter(UNITS_DIR / f"{lang}.parquet", table.schema)
+                    writers[lang] = pq.ParquetWriter(units_dir / f"{lang}.parquet", table.schema)
                 writers[lang].write_table(table)
             print(f"  {lang}: {sum(v for k, v in part_stats.items() if k.startswith('arquivos')):,} arquivos", flush=True)
     for writer in writers.values():
         writer.close()
 
     report = {lang: {**dict(sorted(stats[lang].items())), "repos_com_doc": len(repos[lang])} for lang in langs}
-    path = REPORT_DIR / "corpus.json"
+    path = report_path
     previous = json.loads(path.read_text()) if path.exists() else {}
     path.write_text(json.dumps({**previous, **report}, indent=1))
     print_corpus(report)
@@ -475,11 +493,12 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     corpus_cmd = commands.add_parser("corpus")
     corpus_cmd.add_argument("langs", nargs="*", default=list(LANGUAGES))
+    corpus_cmd.add_argument("--v2", action="store_true", help="corpus e tokenizador v2, saída em v2/units/")
     public_cmd = commands.add_parser("public")
     public_cmd.add_argument("--sample", type=int, default=3000)
     args = parser.parse_args()
     if args.command == "corpus":
-        corpus(args.langs)
+        corpus(args.langs, args.v2)
     else:
         public(args.sample)
 

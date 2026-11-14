@@ -16,3 +16,5 @@ tokenizer.json
 fixed_tokens.json
 uv.lock
 /model
+
+assets/*

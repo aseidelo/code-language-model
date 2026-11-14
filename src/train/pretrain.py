@@ -31,6 +31,7 @@ Na nuvem (H100 no Modal), ver ``train.modal_pretrain``.
 
 import argparse
 import json
+import math
 import shutil
 import time
 from dataclasses import asdict, dataclass, fields
@@ -45,8 +46,8 @@ from transformers.utils import is_flash_attn_2_available
 from codelm.languages import PROJECT_MODEL_DIR
 from codelm.model import ARCHS, CONTEXT_LENGTHS, build_model
 from codelm.quantization import enable_qat
-from codelm.tokenizer import CHECKPOINT_TOKENIZER, active_tokenizer_path, use_tokenizer_of
-from dataprep.pretrain import PRETRAIN_DIR, load_split
+from codelm.tokenizer import CHECKPOINT_TOKENIZER, active_tokenizer_path, tokenizer_sha256, use_tokenizer, use_tokenizer_of
+from dataprep.pretrain import PRETRAIN_DIR, data_tokenizer_path, data_tokenizer_sha256, load_meta, load_split
 from train.smoke_test import pick_device, synchronize
 
 CHECKPOINT_DIR = PROJECT_MODEL_DIR / "checkpoints"
@@ -61,6 +62,7 @@ CONTEXT_BUCKETS = ((0, 2048), (2048, 4096), (4096, EVAL_CONTEXT))
 @dataclass
 class Config:
     size: str = "small"
+    data: str = PRETRAIN_DIR.name  # pasta dos dados em model/ (pretrain-v2; pretrain é o v1)
     arch: str = "llama"  # llama (v1, 2k) ou gemma3 (v2, local/global, 8k)
     attention: str = "auto"  # auto, sdpa ou flash_attention_2 (ver attention_implementation)
     tokens: int | None = None  # tokens de treino no total (None = 1 época)
@@ -84,8 +86,8 @@ class Config:
 class TrainBlocks:
     """Blocos de ``context`` tokens em ordem aleatória (nova a cada época), retomáveis."""
 
-    def __init__(self, context: int, seed: int, epoch: int = 0, cursor: int = 0) -> None:
-        self.tokens, _, _ = load_split("train")
+    def __init__(self, data_dir: Path, context: int, seed: int, epoch: int = 0, cursor: int = 0) -> None:
+        self.tokens, _, _ = load_split("train", data_dir)
         self.context = context
         self.n_blocks = len(self.tokens) // context
         self.seed, self.epoch, self.cursor = seed, epoch, cursor
@@ -104,6 +106,10 @@ class TrainBlocks:
 class Evaluator:
     """Perda na validação: geral, por tipo de documento e por contexto disponível.
 
+    Com os bytes de cada documento (dados v2), sai também a perda em bits por
+    byte (``bpb ...``): cada token leva a fração média de bytes do seu documento,
+    então tokenizadores diferentes ficam comparáveis no mesmo texto.
+
     Usa sempre os mesmos blocos de ``EVAL_CONTEXT`` tokens. Se o modelo tem
     contexto menor, cada bloco é percorrido em janelas de ``context`` tokens que
     avançam meio contexto; cada janela conta só a sua metade final (a primeira
@@ -111,28 +117,26 @@ class Evaluator:
     contexto inteiro de tokens anteriores.
     """
 
-    def __init__(self, sequences: int, context: int) -> None:
-        tokens, starts, kinds = load_split("valid")
-        meta = json.loads((PRETRAIN_DIR / "meta.json").read_text())
-        self.names = meta["doc_kinds"]
+    def __init__(self, data_dir: Path, sequences: int, context: int) -> None:
+        tokens, starts, kinds = load_split("valid", data_dir)
+        self.names = load_meta(data_dir)["doc_kinds"]
         self.context = context
         self.stride = context // 2
         if context < EVAL_CONTEXT and (EVAL_CONTEXT - context) % self.stride:
             raise ValueError(f"contexto {context} não divide o bloco de avaliação {EVAL_CONTEXT}")
         lengths = np.diff(np.append(starts, len(tokens)))
-        # Tipo de documento e início do documento de cada token.
-        token_kinds = np.repeat(kinds, lengths)
-        doc_start = np.repeat(starts, lengths)
+        bytes_file = data_dir / "valid.bytes.npy"
+        bytes_per_token = np.load(bytes_file) / lengths if bytes_file.exists() else None
         n_blocks = len(tokens) // EVAL_CONTEXT
         chosen = np.linspace(0, n_blocks - 1, num=min(sequences, n_blocks)).astype(int)
         self.inputs = np.stack([tokens[b * EVAL_CONTEXT : (b + 1) * EVAL_CONTEXT] for b in chosen]).astype(np.int64)
-        self.kinds = np.stack([token_kinds[b * EVAL_CONTEXT : (b + 1) * EVAL_CONTEXT] for b in chosen])
-        # Contexto disponível: tokens do mesmo documento antes deste, dentro do bloco.
+        # Documento de cada token dos blocos escolhidos.
         position = np.arange(EVAL_CONTEXT)
-        self.available = np.stack([
-            np.minimum(position, b * EVAL_CONTEXT + position - doc_start[b * EVAL_CONTEXT : (b + 1) * EVAL_CONTEXT])
-            for b in chosen
-        ])
+        doc = np.stack([np.searchsorted(starts, b * EVAL_CONTEXT + position, side="right") - 1 for b in chosen])
+        self.kinds = kinds[doc]
+        self.bytes = bytes_per_token[doc] if bytes_per_token is not None else None
+        # Contexto disponível: tokens do mesmo documento antes deste, dentro do bloco.
+        self.available = np.minimum(position, chosen[:, None] * EVAL_CONTEXT + position - starts[doc])
 
     def token_losses(self, model, x: torch.Tensor) -> torch.Tensor:
         """Perda de cada alvo ``x[:, 1:]``, com janela deslizante se o contexto for menor que o bloco."""
@@ -167,6 +171,14 @@ class Evaluator:
         is_text = np.isin(kinds, [i for i, n in enumerate(self.names) if n.startswith("natural:")])
         result = {"valid": float(loss.mean()), "valid código": mean(~is_text), "valid texto": mean(is_text)}
         result.update({f"valid {n}": mean(kinds == i) for i, n in enumerate(self.names)})
+        if self.bytes is not None:
+            token_bytes = self.bytes[:, 1:].reshape(-1)
+
+            def bpb(mask: np.ndarray) -> float | None:
+                return float(loss[mask].sum() / math.log(2) / token_bytes[mask].sum()) if mask.any() else None
+
+            result.update({"bpb": bpb(np.ones_like(is_text)), "bpb código": bpb(~is_text), "bpb texto": bpb(is_text)})
+            result.update({f"bpb {n}": bpb(kinds == i) for i, n in enumerate(self.names)})
         for lo, hi in CONTEXT_BUCKETS:
             in_bucket = (available >= lo) & (available < hi)
             result[f"valid ctx {lo // 1024}k-{hi // 1024}k"] = mean(in_bucket)
@@ -239,12 +251,18 @@ def main() -> None:
     state = {"step": 0, "epoch": 0, "cursor": 0, "qat": False}
     if args.resume:
         state = json.loads((run_dir / "latest" / "state.json").read_text())
-        cfg = Config(**state["config"])
+        cfg = Config(**{"data": "pretrain", **state["config"]})  # rodadas sem "data" são do v1
         use_tokenizer_of(run_dir / "latest")
     else:
         if (run_dir / "latest").exists():
             parser.error(f"a rodada {args.run} já existe; use --resume ou outro nome")
         cfg = Config(**{f.name: getattr(args, f.name) for f in fields(Config) if getattr(args, f.name) is not None})
+    data_dir = PROJECT_MODEL_DIR / cfg.data
+    meta = load_meta(data_dir)
+    if not args.resume:
+        use_tokenizer(data_tokenizer_path(meta))  # o tokenizador com que os dados foram empacotados
+    if tokenizer_sha256(active_tokenizer_path()) != data_tokenizer_sha256(meta):
+        parser.error(f"os dados em {data_dir} não são do tokenizador do checkpoint ({active_tokenizer_path()})")
     run_dir.mkdir(parents=True, exist_ok=True)
 
     device = pick_device()
@@ -252,8 +270,8 @@ def main() -> None:
     if cfg.arch not in ARCHS:
         parser.error(f"arquitetura desconhecida: {cfg.arch} (opções: {', '.join(ARCHS)})")
     context = CONTEXT_LENGTHS[cfg.arch]
-    data = TrainBlocks(context, cfg.seed, state["epoch"], state["cursor"])
-    evaluator = Evaluator(cfg.eval_sequences, context)
+    data = TrainBlocks(data_dir, context, cfg.seed, state["epoch"], state["cursor"])
+    evaluator = Evaluator(data_dir, cfg.eval_sequences, context)
     tokens = cfg.tokens or data.n_blocks * context
     accum = cfg.batch_tokens // (cfg.micro_batch * context)
     if accum < 1 or cfg.batch_tokens % (cfg.micro_batch * context):

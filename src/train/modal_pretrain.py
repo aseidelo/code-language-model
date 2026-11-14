@@ -5,14 +5,16 @@ container (CUDA, as mesmas versões das bibliotecas do projeto, o ``src/`` e o
 tokenizador) e um volume do Modal no lugar da pasta ``model/`` do projeto:
 
     volume "codelm"
-    ├── pretrain/              dados (train.bin, valid.bin, ...), enviados com ``upload``
+    ├── pretrain-v2/           dados v2 (train.bin, valid.bin, ...), enviados com ``upload``
+    ├── pretrain/              dados v1
     └── checkpoints/<rodada>/  checkpoints e metrics.jsonl, trazidos com ``download``
 
 GPUs do Modal podem ser interrompidas pela plataforma. A função tenta de novo
 sozinha e, se a rodada já tem ``latest/``, continua dele com ``--resume``.
 
 Uso (uma vez: ``uv run modal setup`` para autenticar):
-    uv run modal run src/train/modal_pretrain.py::upload               # sobe model/pretrain (~2,3 GB)
+    uv run modal run src/train/modal_pretrain.py::upload               # sobe model/pretrain-v2 (~23 GB)
+    uv run modal run src/train/modal_pretrain.py::upload --data pretrain   # o v1 (~2,3 GB)
     uv run modal run --detach src/train/modal_pretrain.py::main \\
         --args="--run ab-gemma3 --arch gemma3 --size small --tokens 1000000000 --micro-batch 8"
     uv run modal run src/train/modal_pretrain.py::download --run ab-gemma3   # -> model/checkpoints/ab-gemma3
@@ -103,14 +105,14 @@ def main(args: str) -> None:
 
 
 @app.local_entrypoint()
-def upload() -> None:
-    """Sobe ``model/pretrain`` para o volume (substitui o que estiver lá)."""
-    source = PROJECT_ROOT / "model" / "pretrain"
+def upload(data: str = "pretrain-v2") -> None:
+    """Sobe ``model/<data>`` para o volume (substitui o que estiver lá; as partes de ``pack`` ficam de fora)."""
+    source = PROJECT_ROOT / "model" / data
     files = sorted(p for p in source.iterdir() if p.is_file())
-    print(f"enviando {len(files)} arquivos ({sum(p.stat().st_size for p in files) / 1e9:.2f} GB) para {VOLUME_NAME}:/pretrain")
+    print(f"enviando {len(files)} arquivos ({sum(p.stat().st_size for p in files) / 1e9:.2f} GB) para {VOLUME_NAME}:/{data}")
     with volume.batch_upload(force=True) as batch:
         for path in files:
-            batch.put_file(path, f"/pretrain/{path.name}")
+            batch.put_file(path, f"/{data}/{path.name}")
     print("ok")
 
 

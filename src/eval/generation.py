@@ -15,7 +15,7 @@ from collections.abc import Callable
 import numpy as np
 import torch
 from tokenizers import Tokenizer
-from transformers import LlamaForCausalLM
+from transformers import AutoModelForCausalLM
 
 from codelm.languages import PROJECT_MODEL_DIR
 from codelm.model import CONTEXT_LENGTH
@@ -30,7 +30,7 @@ ENGINES = ("float", "qat", "gguf", "f16")
 class TorchEngine:
     def __init__(self, checkpoint: str, qat: bool) -> None:
         self.device = pick_device()
-        self.model = LlamaForCausalLM.from_pretrained(CHECKPOINT_DIR / checkpoint).to(self.device).eval()
+        self.model = AutoModelForCausalLM.from_pretrained(CHECKPOINT_DIR / checkpoint).to(self.device).eval()
         if qat:
             enable_qat(self.model.model.layers)
         self.reset()

@@ -28,7 +28,7 @@ from dataclasses import asdict, dataclass, fields
 
 import numpy as np
 import torch
-from transformers import LlamaForCausalLM
+from transformers import AutoModelForCausalLM
 
 from codelm.chat_template import RESPONSE, decode_response, encode_prompt
 from codelm.model import PAD
@@ -259,10 +259,10 @@ def backward_in_chunks(model, rollouts: list[Rollout], advantages: np.ndarray, d
     return len(chunks)
 
 
-def load_model(source, device) -> LlamaForCausalLM:
+def load_model(source, device) :
     # Atenção "eager": o kernel sdpa da XPU acessa memória inválida em alguns lotes com
     # preenchimento à esquerda e cache, e a GPU perde o dispositivo (UR_RESULT_ERROR_DEVICE_LOST).
-    model = LlamaForCausalLM.from_pretrained(source, attn_implementation="eager").to(device)
+    model = AutoModelForCausalLM.from_pretrained(source, attn_implementation="eager").to(device)
     enable_qat(model.model.layers)
     model.gradient_checkpointing_enable()
     return model

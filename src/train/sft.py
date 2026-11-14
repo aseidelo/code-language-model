@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import LlamaForCausalLM
+from transformers import AutoModelForCausalLM
 
 from codelm.model import CONTEXT_LENGTH, PAD
 from codelm.quantization import enable_qat
@@ -173,7 +173,7 @@ def main() -> None:
     accum = cfg.batch_tokens // cfg.micro_tokens
     total_steps = int(cfg.epochs * len(data.order)) // accum
 
-    model = LlamaForCausalLM.from_pretrained(source).to(device)
+    model = AutoModelForCausalLM.from_pretrained(source).to(device)
     enable_qat(model.model.layers)
     optimizer = make_optimizer(model, cfg)
     if args.resume:

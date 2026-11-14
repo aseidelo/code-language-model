@@ -6,13 +6,17 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "anthropic>=2.1.0",
+    "ctranslate2>=4.9.0",
     "datasets>=5.1.0",
     "lingua-language-detector>=2.2.0",
     "llguidance>=1.9.1",
     "numpy>=2.5.4",
     "pyflakes>=4.1.0",
     "pytorch-triton-xpu==3.4.0",
+    "ruamel-yaml>=0.19.1",
+    "sacremoses>=0.2.0",
     "scipy>=1.18.1",
+    "sentencepiece>=0.2.3",
     "tokenizers>=0.23.3",
     "torch==2.8.0",
     "torchao>=0.13,<0.14",

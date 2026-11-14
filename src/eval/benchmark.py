@@ -193,6 +193,10 @@ def compare(args) -> None:
             only_b = sum(b[i]["passed"] and not a[i]["passed"] for i in shared)
             same = sum(a[i]["code"] == b[i]["code"] for i in shared)
             print(f"  {first} x {second}: {only_a} / {only_b} / {same} de {len(shared)}")
+    if variants:
+        from reports.benchmark import from_variants, render
+        primary = next((v for v in ("gguf máscara", "f16 máscara") if v in variants), None)
+        print(f"página: {render(from_variants(args.checkpoint, variants, primary))}")
 
 
 def loss(args) -> None:
