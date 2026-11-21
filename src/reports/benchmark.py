@@ -1,4 +1,4 @@
-"""Página de benchmark (``assets/templates/benchmark.html``) a partir dos resultados das avaliações.
+"""Página de benchmark (``benchmark.html`` do blog, ver ``reports``) a partir dos resultados das avaliações.
 
 O template lê um JSON ``run-data`` (esquema no comentário do topo do template): modelo, rodada,
 benchmarks com pontuação, intervalo, linhas de base e quebras. Aqui ficam o ``render`` genérico e

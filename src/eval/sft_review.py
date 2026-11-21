@@ -78,6 +78,89 @@ FIELD_VIEW = [
 ]
 
 
+# Referência das tarefas (docs/sft.md e docs/sft-v2.md): rótulo, resumo e o que checar em cada uma.
+TASKS = {
+    "T1": {
+        "label": "description → code",
+        "summary": "A request in natural language; the response is code that does what was asked.",
+        "guidelines": [
+            "The code does everything the request asks, in the programming language it asks for.",
+            "Prose around the code is fine when it is correct and in the request's natural language.",
+            "Reject when parts of the request are ignored, or the request is too vague to have a right answer.",
+        ],
+    },
+    "T2": {
+        "label": "docstring → code",
+        "summary": "A function signature with its docstring (Code in the request); the response is the function "
+                   "with the body implemented.",
+        "guidelines": [
+            "The request is a fixed instruction; it may be in another natural language than the docstring. "
+            "That is on purpose.",
+            "The response keeps the signature and the docstring and adds a body that does what the docstring says.",
+            "Calls to other parts of the original project are fine; judge whether the body matches the docstring.",
+            "Reject stubs (pass, TODO) and docstrings too vague to define the behaviour (reason: bad request).",
+        ],
+    },
+    "T3": {
+        "label": "code → description",
+        "summary": "Code in the request; the response explains in natural language what it does.",
+        "guidelines": [
+            "The description is accurate and covers the main behaviour, with no invented details.",
+            "It is written in the request's natural language.",
+        ],
+    },
+    "T4": {
+        "label": "code → structured description",
+        "summary": "Code in the request; the response describes it as JSON in the fixed schema.",
+        "guidelines": [
+            "The JSON is valid and follows the schema.",
+            "Every field is accurate for this code; nothing is invented.",
+        ],
+    },
+    "T5": {
+        "label": "code → docstring",
+        "summary": "A function without documentation; the response is the same function with a docstring added.",
+        "guidelines": [
+            "Apart from the docstring, the code is unchanged (compare with Code in the request).",
+            "The docstring uses the language's convention: docstring, JSDoc, Javadoc, rustdoc, block comment in C.",
+            "The docstring comes from the original author: judge whether it describes the function, not its style.",
+            "Reject leftovers that say nothing about the function, such as '(non-Javadoc) @see ...'.",
+        ],
+    },
+    "T6": {
+        "label": "fix the bug",
+        "summary": "Broken code, sometimes with a hint (what it should do, the error line, a failing test); the "
+                   "response is the corrected code.",
+        "guidelines": [
+            "Bugs are injected automatically: a logic change in Python, checked by tests; a syntax error in C, "
+            "TS, Rust, JS, Java or Bash; or a parse error in JSON/YAML.",
+            "The response is the full original code: the fix should be minimal and everything else identical.",
+            "About 5% are negatives: the code is already correct and the response says so. Approve if it really is.",
+            "Reject when the hint contradicts the code, or the bug leaves more than one reasonable fix and "
+            "nothing in the request picks one.",
+        ],
+    },
+    "T7": {
+        "label": "JSON/YAML transformation",
+        "summary": "A JSON or YAML document; the response converts it (JSON ↔ YAML), reformats it, edits it, or "
+                   "extracts a value.",
+        "guidelines": [
+            "Generated and checked automatically; confirm the response does exactly what was asked: the right "
+            "path, key or format.",
+            "In edits and conversions, nothing else in the document changes.",
+            "The documents come from real repositories: reject only when the document itself is junk.",
+        ],
+    },
+}
+
+
+def task_guide(translation: bool) -> dict:
+    # Na tradução só o pedido muda: basta saber o que é cada tarefa.
+    entries = {k: {key: v for key, v in t.items() if not (translation and key == "guidelines")}
+               for k, t in TASKS.items()}
+    return {"key": "task", "title": "Tasks", "entries": entries}
+
+
 def page_config(translation: bool) -> dict:
     return {
         "title": "Translation pilot" if translation else "SFT v2 review",
@@ -96,6 +179,7 @@ def page_config(translation: bool) -> dict:
         "storageKey": f"codelm-review:{SAMPLE.stem}",
         "idKey": "id",
         "meta": ["dataset", "task", "lang", "nl", "level", "source"],
+        "itemGuide": task_guide(translation),
         "copy": ["qc_falhas"],
         "warn": "avisos",
         "fields": FIELD_VIEW,

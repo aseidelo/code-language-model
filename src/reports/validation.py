@@ -1,4 +1,4 @@
-"""Página de validação humana (``assets/templates/human-validation.html``) com uma configuração.
+"""Página de validação humana (``human-validation.html`` do blog, ver ``reports``) com uma configuração.
 
 O template guarda a configuração num objeto ``VALIDATION`` (campos, pílulas, vereditos, motivos e
 de onde vêm itens e notas); ``render`` troca esse objeto pelo ``config`` dado e esvazia os itens de

@@ -2,7 +2,9 @@
 
 O relatório técnico é gerado pela ferramenta do blog (``seidelbots-blog/design/tools/render_report.py``).
 
-Os templates ficam em ``assets/templates/`` (cópia de ``seidelbots-blog/design/templates/``).
+Os templates não ficam no codelm: são lidos do repositório do blog, em
+``seidelbots-blog/design/templates/`` ao lado deste repositório, ou em ``$SEIDELBOTS_TEMPLATES``.
+Mudanças de template se fazem lá.
 Cada página é um HTML único, sem dependências além das fontes do Google.
 """
 import json
@@ -10,14 +12,21 @@ import re
 import subprocess
 from pathlib import Path
 
-from codelm.languages import ASSETS_DIR, PROJECT_ROOT
+import os
 
-TEMPLATES_DIR = ASSETS_DIR / "templates"
+from codelm.languages import PROJECT_ROOT
+
+TEMPLATES_DIR = Path(os.environ.get("SEIDELBOTS_TEMPLATES")
+                     or PROJECT_ROOT.parent / "seidelbots-blog" / "design" / "templates")
 DOCS_DIR = PROJECT_ROOT / "docs"
 
 
 def template(name: str) -> str:
-    return (TEMPLATES_DIR / name).read_text(encoding="utf-8")
+    path = TEMPLATES_DIR / name
+    if not path.exists():
+        raise FileNotFoundError(f"template {path} não existe: clone o seidelbots-blog ao lado do codelm "
+                                "ou aponte SEIDELBOTS_TEMPLATES para a pasta design/templates dele")
+    return path.read_text(encoding="utf-8")
 
 
 def git(*args: str) -> str | None:
