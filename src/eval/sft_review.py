@@ -1,4 +1,4 @@
-"""Revisão humana do SFT v2: uma página web local para marcar uma amostra (ver docs/sft-v2.md).
+"""Revisão humana do SFT v2: uma página web local para marcar uma amostra (ver docs/memory/sft-v2.md).
 
 ``amostra`` sorteia poucos exemplos por célula fonte × linguagem × tarefa (as linguagens
 que não são nossas viram uma célula só) e grava ``v2/revisao/amostra.json`` com as
@@ -78,7 +78,7 @@ FIELD_VIEW = [
 ]
 
 
-# Referência das tarefas (docs/sft.md e docs/sft-v2.md): rótulo, resumo e o que checar em cada uma.
+# Referência das tarefas (docs/memory/sft.md e docs/memory/sft-v2.md): rótulo, resumo e o que checar em cada uma.
 TASKS = {
     "T1": {
         "label": "description → code",

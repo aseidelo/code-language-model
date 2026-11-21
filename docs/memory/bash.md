@@ -4,7 +4,7 @@ Plano para incluir o bash como 11ª linguagem. **Decisão:** a adição será fe
 recomeçando do zero (tokenizador, corpus, pré-treino e SFT), sem estender o modelo
 atual.
 
-**Estado (2026-11-10):** o bash entrou no pré-treino v2 (`docs/dados-v2.md`). Já
+**Estado (2026-11-10):** o bash entrou no pré-treino v2 (`docs/memory/dados-v2.md`). Já
 implementados: a entrada em `codelm/languages.py` (fonte: o Shell do Stack-Edu, não o
 the-stack-dedup), o lexer e a indentação, os filtros, o corpus pequeno e os tokens fixos.
 O tokenizador v2 está sendo treinado. Faltam o corpus de pré-treino e o SFT.

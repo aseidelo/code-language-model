@@ -1,4 +1,4 @@
-"""Levantamento dos candidatos a dados de SFT (ver docs/sft.md).
+"""Levantamento dos candidatos a dados de SFT (ver docs/memory/sft.md).
 
 Subcomandos:
 

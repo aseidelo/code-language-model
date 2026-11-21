@@ -1,6 +1,6 @@
 """T6 de sintaxe: estraga a sintaxe de funções do corpus v2 e pede a correção.
 
-Desenho em docs/sft-v2.md ("T6 de sintaxe"). Resumo:
+Desenho em docs/memory/sft-v2.md ("T6 de sintaxe"). Resumo:
 
 * Linguagens: C, TypeScript, Rust, JavaScript, Java e Bash. Python já tem o T6 semântico.
 * Fonte: ``v2/units/<lang>.parquet``, funções fáceis e médias com 16–600 tokens, cada uma usada uma vez.

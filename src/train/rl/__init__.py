@@ -1,1 +1,1 @@
-"""Aprendizado por reforço (ver docs/grpo.md)."""
+"""Aprendizado por reforço (ver docs/memory/grpo.md)."""

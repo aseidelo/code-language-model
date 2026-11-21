@@ -141,7 +141,7 @@ Modelo `small` (42M), ~1B tokens de cada lado, com os dados do base-v1.
 
 **Critério:** o (B) passa se ficar melhor na perda acima de 2047 e não ficar pior que o
 (A), além do ruído, na perda até 2047 e no HumanEval + MBPP (2 erros padrão, como em
-`docs/etapas.md`).
+`docs/memory/etapas.md`).
 
 **Custo:** ~US$ 2–4 no total, nos preços do Modal para a H100 (US$ 0,0011/s).
 
@@ -234,4 +234,4 @@ entre rodadas com sementes diferentes, que não foi medida.
 O v2 segue com a **Gemma 3 local/global em 8k**, aceitando a pequena perda em código
 curto (+0,027 na perda das soluções) pelo ganho em arquivos longos (−0,075 na faixa de
 4k–8k). O experimento (C) e a segunda semente ficam para depois, se for preciso. O próximo
-passo é a expansão dos dados (`docs/dados-v2.md`).
+passo é a expansão dos dados (`docs/memory/dados-v2.md`).

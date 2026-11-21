@@ -1,6 +1,6 @@
 """Gera os exercícios dos modelos, junta os do OpenCoder, valida cada um e monta o pacote do SFT.
 
-Três partes, sem problema em comum entre elas (ver docs/grpo.md):
+Três partes, sem problema em comum entre elas (ver docs/memory/grpo.md):
 
 * ``train``: o SFT;
 * ``rl``: o GRPO, que precisa de problemas que o SFT não viu (senão o modelo os decora

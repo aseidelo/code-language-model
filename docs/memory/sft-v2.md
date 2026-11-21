@@ -1,6 +1,6 @@
 # SFT v2
 
-Dados do ajuste fino do base-v2 em diante. Substitui o banco do `docs/sft.md`, que
+Dados do ajuste fino do base-v2 em diante. Substitui o banco do `docs/memory/sft.md`, que
 continua valendo para as definições das tarefas (T1 a T5), do schema do T4 e dos níveis.
 
 ## Por que um v2
@@ -48,7 +48,7 @@ As colunas do banco v1 (`id`, `task`, `level`, `lang`, `nl`, `source`, `repo`, `
 ## Estágio 1: sem geração própria
 
 Tudo o que dá para montar sem usar um LLM nosso. Os números do levantamento v1 estão em
-`docs/sft_candidatos.md`; o v2 refaz o levantamento com contagens completas.
+`docs/memory/sft_candidatos.md`; o v2 refaz o levantamento com contagens completas.
 
 | Fonte | Licença | Tarefas | Observação |
 |---|---|---|---|
@@ -290,8 +290,22 @@ vazão. Se o Opus-MT ficar ruim, a alternativa é um LLM pequeno local (Qwen3-4B
   propósito. Backup da versão anterior em `v2/traducao/backup-traducao-v2-antes-templates/`.
   Total da fase A: 2.002.743 exemplos, ~685M tokens. A saída tem ids repetidos que já vinham das
   fontes (~9 mil no pt); a deduplicação os marca.
-- **Fase B (pendente):** completar os idiomas com Python, HTML e outras linguagens. A ideia é
-  priorizar prompt curto com código longo, que rende mais tokens por caractere traduzido.
+**Fase B** (decidida em 2026-11-21; `sft_translate planejar-b` e `traduzir-b`, saída em
+`fontes/traducao-v2b/`):
+
+- **Inventário antes:** cada idioma tinha ~320M tokens (2,3%), contra ~600M do alvo (6% de 10B).
+  Java, C, TS, Rust, JS, Bash e JSON/YAML já estavam no alvo dentro de cada idioma. Faltavam
+  Python (~45M de 270M) e HTML (0 de 36M).
+- **Orçamento por idioma:** HTML 36M; Python 225M, com metade em T2 e metade em T1.
+  - **HTML:** T1 do WebSight (e o pouco HTML das outras fontes), por Opus-MT. Fração sorteada: 14%.
+  - **Python T2:** só troca de template, sem Opus-MT. Fração sorteada: 44%.
+  - **Python T1:** por Opus-MT, com prioridade para mais tokens por caractere traduzido. A prosa é o
+    pedido sem os blocos de código, e o pedido precisa ter pelo menos 5 palavras. O corte ficou em
+    1,29 tokens/caractere: ~590M tokens, ~340M caracteres, ~10 h de CPU. A mediana fica em 50
+    palavras por pedido, e o open-code-instruct dá metade.
+- **T5 fica de fora:** com o pedido traduzido, a resposta (a docstring) continuaria em inglês.
+- As regras da fase A continuam: 1 tradução por exemplo, idioma sorteado pelo id e só exemplos
+  aprovados no QC. O plano fica em `traducao-v2b/plano.json`.
 
 ## Ordem de trabalho
 

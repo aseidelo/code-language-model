@@ -1,6 +1,6 @@
 """Tradução local de pedidos (en -> pt/es/fr/de/it) com Opus-MT na XPU.
 
-Desenho em docs/sft-v2.md ("Tradução local"). Resumo:
+Desenho em docs/memory/sft-v2.md ("Tradução local"). Resumo:
 
 * Só a prosa é traduzida. Blocos de código ficam intactos. Trechos entre crases, termos do glossário
   (``assets/sft/glossario.txt``) e identificadores viram marcadores ``X0X`` e voltam depois. Os
@@ -377,9 +377,9 @@ def translated_row(row: dict, text: str, nl: str, fonte: str) -> dict:
             "fonte_original": fonte, "n_tokens": n_tokens}
 
 
-def part_paths(nl: str, fonte: str, part: Path) -> tuple[Path, Path]:
+def part_paths(nl: str, fonte: str, part: Path, out_fonte: str = OUT_FONTE) -> tuple[Path, Path]:
     """(saída traduzida, QC da parte de origem)."""
-    out = FONTES_DIR / OUT_FONTE / f"part-{fonte}-{part.stem.removeprefix('part-')}-{nl}.parquet"
+    out = FONTES_DIR / out_fonte / f"part-{fonte}-{part.stem.removeprefix('part-')}-{nl}.parquet"
     return out, FONTES_DIR.parent / "qc" / fonte / part.name
 
 
@@ -391,11 +391,12 @@ def write_part(out: Path, schema: pa.Schema, rows: list[dict]) -> None:
     tmp.rename(out)
 
 
-def translate_part(translator: CT2Translator, nl: str, fonte: str, part: Path, stats: Counter) -> None:
-    out, qc_path = part_paths(nl, fonte, part)
+def translate_part(translator: CT2Translator, nl: str, fonte: str, part: Path, stats: Counter,
+                   select=None, out_fonte: str = OUT_FONTE) -> None:
+    out, qc_path = part_paths(nl, fonte, part, out_fonte)
     if out.exists() or not qc_path.exists():
         return
-    table = selected(pq.read_table(part), pq.read_table(qc_path, columns=["id", "qc_falhas"]), nl)
+    table = (select or selected)(pq.read_table(part), pq.read_table(qc_path, columns=["id", "qc_falhas"]), nl)
     if not len(table):
         return
     templates = instruction_templates()
@@ -461,15 +462,137 @@ def translate_all(targets: list[str]) -> None:
     save_translation_meta()
 
 
-def save_translation_meta() -> None:
-    out_dir = FONTES_DIR / OUT_FONTE
+# --- fase B: Python e HTML ---------------------------------------------------------------------
+# Decidido em 2026-11-21 (docs/memory/sft-v2.md, "Fase B"). Orçamento por idioma, em tokens: HTML do WebSight
+# por Opus-MT; Python metade T2 (template, sem Opus-MT) e metade T1 (Opus-MT, prioridade para muitos
+# tokens por caractere traduzido). T5 fica de fora: a resposta (a docstring) seguiria em inglês.
+OUT_FONTE_B = "traducao-v2b"
+PLAN_B_FILE = FONTES_DIR / OUT_FONTE_B / "plano.json"
+BUDGET_B = {"html-t1": 36e6, "python-t2": 112e6, "python-t1": 112e6}
+T1_REJECTED = 0.05  # fração rejeitada na fase A; o orçamento do T1 compensa
+MIN_WORDS = 5
+
+
+def prose_chars(prompt: str) -> int:
+    """Caracteres que o Opus-MT traduz: o pedido sem os blocos de código."""
+    return len(FENCE.sub("", prompt or "").strip())
+
+
+def base_mask(table: pa.Table, qc: pa.Table):
+    import pyarrow.compute as pc
+    ok = pc.filter(qc.column("id"), pc.equal(pc.list_value_length(qc.column("qc_falhas")), 0))
+    mask = pc.and_(pc.is_in(table.column("id"), ok), pc.equal(table.column("nl"), "en"))
+    mask = pc.and_(mask, pc.is_in(table.column("task"), pa.array(["T1", "T2"])))
+    mask = pc.and_(mask, pc.is_in(table.column("lang"), pa.array(["python", "html"])))
+    if "kind" in table.column_names:
+        mask = pc.and_(mask, pc.equal(pc.fill_null(table.column("kind"), "code"), "code"))
+    return mask
+
+
+def cell_b(row: dict) -> str | None:
+    """Célula da fase B do exemplo (já filtrado por ``base_mask``), ou None."""
+    templates = instruction_templates()
+    if row["lang"] == "html":
+        return "html-t1" if row["task"] == "T1" else None
+    if row["task"] == "T2":
+        return "python-t2" if row["prompt"] in templates else None
+    if row["prompt"] in templates or len((row["prompt"] or "").split()) < MIN_WORDS:
+        return None
+    return "python-t1"
+
+
+def t1_ratio(row: dict) -> float:
+    return (row["n_tokens"] or 0) / max(prose_chars(row["prompt"]), 1)
+
+
+def fontes_b() -> list[str]:
+    return sorted(p.name for p in FONTES_DIR.iterdir() if p.is_dir() and not p.name.startswith(SKIP_FONTES))
+
+
+def plan_b() -> dict:
+    """Uma passada nas fontes: frações do HTML e do T2 e o corte de tokens/caractere do T1 que fecham o
+    orçamento (cada exemplo vai a um idioma só, sorteado pelo id, então o total é 5 × o orçamento)."""
+    tokens: Counter = Counter()
+    t1: list[tuple[float, int, int]] = []
+    for fonte in fontes_b():
+        for part in sorted((FONTES_DIR / fonte).glob("part-*.parquet")):
+            qc_path = FONTES_DIR.parent / "qc" / fonte / part.name
+            names = pq.read_schema(part).names
+            if not qc_path.exists() or "lang" not in names:
+                continue
+            cols = [c for c in ("id", "task", "lang", "nl", "kind", "prompt", "n_tokens") if c in names]
+            table = pq.read_table(part, columns=cols)
+            table = table.filter(base_mask(table, pq.read_table(qc_path, columns=["id", "qc_falhas"])))
+            for row in table.to_pylist():
+                cell = cell_b(row)
+                if cell is None:
+                    continue
+                tokens[cell] += row["n_tokens"] or 0
+                if cell == "python-t1":
+                    t1.append((t1_ratio(row), row["n_tokens"] or 0, prose_chars(row["prompt"])))
+        print(f"  {fonte}: " + " | ".join(f"{k} {v / 1e6:,.0f}M" for k, v in sorted(tokens.items())), flush=True)
+    n = len(TARGETS)
+    plan = {"orcamento_por_idioma": BUDGET_B, "disponivel": dict(tokens),
+            "fracao": {c: min(1.0, n * BUDGET_B[c] / tokens[c]) for c in ("html-t1", "python-t2") if tokens[c]}}
+    goal, total, chars, cut = n * BUDGET_B["python-t1"] / (1 - T1_REJECTED), 0, 0, 0.0
+    for ratio, n_tokens, n_chars in sorted(t1, reverse=True):
+        if total >= goal:
+            break
+        total, chars, cut = total + n_tokens, chars + n_chars, ratio
+    plan["corte_t1"] = cut
+    plan["t1_selecionado"] = {"tokens": total, "caracteres": chars, "horas_cpu": round(chars / 9800 / 3600, 1)}
+    PLAN_B_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PLAN_B_FILE.write_text(json.dumps(plan, indent=1))
+    return plan
+
+
+def selected_b(plan: dict):
+    def select(table: pa.Table, qc: pa.Table, nl: str) -> pa.Table:
+        names = table.column_names
+        if "lang" not in names:
+            return table.slice(0, 0)
+        table = table.filter(base_mask(table, qc))
+        keep = []
+        for i, row in enumerate(table.select([c for c in ("id", "task", "lang", "prompt", "n_tokens") if c in names])
+                                .to_pylist()):
+            cell = cell_b(row)
+            u, target = assignment(row["id"])
+            if cell is None or target != nl:
+                continue
+            if cell == "python-t1" and t1_ratio(row) >= plan["corte_t1"] or u < plan["fracao"].get(cell, 0.0):
+                keep.append(i)
+        return table.take(pa.array(keep, pa.int64()))
+    return select
+
+
+def translate_all_b(targets: list[str]) -> None:
+    if not PLAN_B_FILE.exists():
+        raise SystemExit("rode antes: uv run python -m dataprep.sft_translate planejar-b")
+    plan = json.loads(PLAN_B_FILE.read_text())
+    select, out_dir = selected_b(plan), FONTES_DIR / OUT_FONTE_B
+    stats_path = out_dir / "execucao.json"
+    for nl in targets:
+        translator, start = CT2Translator(nl), time.time()
+        stats: Counter = Counter(json.loads(stats_path.read_text())) if stats_path.exists() else Counter()
+        for fonte in fontes_b():
+            for part in sorted((FONTES_DIR / fonte).glob("part-*.parquet")):
+                translate_part(translator, nl, fonte, part, stats, select, OUT_FONTE_B)
+                stats_path.write_text(json.dumps(dict(sorted(stats.items())), indent=1))
+            print(f"  {nl} {fonte}: ok={stats[f'{nl}:ok']:,} template={stats[f'{nl}:template']:,} | "
+                  f"{time.time() - start:.0f}s", flush=True)
+        print(f"{nl}: pronto em {time.time() - start:.0f}s", flush=True)
+    save_translation_meta(OUT_FONTE_B, {"orcamento_por_idioma": BUDGET_B, **{k: plan[k] for k in ("fracao", "corte_t1")}})
+
+
+def save_translation_meta(out_fonte: str = OUT_FONTE, plan: dict | None = None) -> None:
+    out_dir = FONTES_DIR / out_fonte
     cells: Counter = Counter()
     tokens: Counter = Counter()
     for part in sorted(out_dir.glob("part-*.parquet")):
         for r in pq.read_table(part, columns=["lang", "nl", "n_tokens"]).to_pylist():
             cells[f"{r['lang']}|{r['nl']}"] += 1
             tokens[f"{r['lang']}|{r['nl']}"] += r["n_tokens"] or 0
-    meta = {"fonte": OUT_FONTE, "modelo": "Opus-MT (CTranslate2 int8, busca gulosa)", "plano": PLAN,
+    meta = {"fonte": out_fonte, "modelo": "Opus-MT (CTranslate2 int8, busca gulosa)", "plano": plan or PLAN,
             "exemplos": sum(cells.values()), "tokens_estimados": sum(tokens.values()),
             "celulas": {k: {"exemplos": cells[k], "tokens": tokens[k]} for k in sorted(cells)},
             "gerado_em": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -485,8 +608,15 @@ def main() -> None:
     run_cmd.add_argument("idiomas", nargs="*", default=list(TARGETS))
     tpl_cmd = sub.add_parser("templates", help="troca, nas partes já traduzidas, o Opus-MT dos templates pelo manual")
     tpl_cmd.add_argument("idiomas", nargs="*", default=list(TARGETS))
+    sub.add_parser("planejar-b", help="fase B: frações e corte do T1 que fecham o orçamento")
+    run_b = sub.add_parser("traduzir-b", help="fase B: Python (T2 por template, T1 por Opus-MT) e HTML")
+    run_b.add_argument("idiomas", nargs="*", default=list(TARGETS))
     args = parser.parse_args()
-    if args.cmd == "piloto":
+    if args.cmd == "planejar-b":
+        print(json.dumps(plan_b(), indent=1))
+    elif args.cmd == "traduzir-b":
+        translate_all_b(args.idiomas)
+    elif args.cmd == "piloto":
         pilot(args.por_idioma)
     elif args.cmd == "templates":
         apply_templates(args.idiomas)

@@ -1,4 +1,4 @@
-"""Conversão das fontes do SFT v2 para o schema do banco (ver docs/sft-v2.md).
+"""Conversão das fontes do SFT v2 para o schema do banco (ver docs/memory/sft-v2.md).
 
 Lê ``data/codelm_sft/v2/raw/<fonte>/`` (``dataprep.sft_sources``) e as funções do
 corpus v2 (``v2/units/``, de ``dataprep.sft_candidates corpus --v2``) e grava

@@ -1,4 +1,4 @@
-"""Adaptador Python da recompensa (ver docs/grpo.md).
+"""Adaptador Python da recompensa (ver docs/memory/grpo.md).
 
 Uma execução no sandbox por resposta: carrega o código, roda cada teste e conta, com
 ``sys.monitoring``, as instruções de bytecode da resposta executadas nos testes (as do

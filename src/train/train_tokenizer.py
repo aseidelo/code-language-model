@@ -31,7 +31,7 @@ from dataprep.corpus import iter_natural_texts, iter_texts
 
 # Mesmo volume por linguagem para nenhuma dominar o vocabulário.
 TRAIN_MAX_CHARS_PER_LANG = 40_000_000
-# Texto natural: o inglês domina o pré-treino v2 (docs/dados-v2.md), então pesa mais
+# Texto natural: o inglês domina o pré-treino v2 (docs/memory/dados-v2.md), então pesa mais
 # aqui também: todo o inglês do corpus pequeno (~34M) e 14M de cada outro idioma.
 # ~420M de caracteres de código + ~104M de texto natural = ~20% de texto.
 TRAIN_MAX_CHARS_PER_NATURAL_LANG = {"en": 34_000_000}

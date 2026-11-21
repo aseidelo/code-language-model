@@ -1,4 +1,4 @@
-"""Exemplos de T1, T3 e T4 por instrução reversa sobre o corpus (ver docs/sft.md).
+"""Exemplos de T1, T3 e T4 por instrução reversa sobre o corpus (ver docs/memory/sft.md).
 
 A partir de um trecho real (função ou arquivo inteiro), um LLM (``MODELS``) escreve,
 direto no idioma alvo, o pedido que levaria a ele (T1), a descrição (T3) ou a

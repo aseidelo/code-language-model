@@ -1,4 +1,4 @@
-"""pass@k no HumanEval (e no MBPP, no modo chat), por temperatura (ver docs/etapas.md).
+"""pass@k no HumanEval (e no MBPP, no modo chat), por temperatura (ver docs/memory/etapas.md).
 
 Dois modos:
 

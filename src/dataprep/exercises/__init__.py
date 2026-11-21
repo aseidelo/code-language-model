@@ -1,4 +1,4 @@
-"""Exercícios Python autocontidos e executáveis, para o SFT e o GRPO (ver docs/sft.md)."""
+"""Exercícios Python autocontidos e executáveis, para o SFT e o GRPO (ver docs/memory/sft.md)."""
 
 from dataclasses import dataclass
 

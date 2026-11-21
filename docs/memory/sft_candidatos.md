@@ -1,6 +1,6 @@
 # Candidatos a dados de SFT
 
-Levantamento do que existe para cada tarefa e linguagem de `docs/sft.md`, antes
+Levantamento do que existe para cada tarefa e linguagem de `docs/memory/sft.md`, antes
 de gerar qualquer dado. Gerado por `src/dataprep/sft_candidates.py`:
 
 ```bash
@@ -88,7 +88,7 @@ Code, 91%).
 
 ## Cobertura frente às metas
 
-Necessidade por linguagem em cada mistura (de `docs/sft.md`; linguagens de
+Necessidade por linguagem em cada mistura (de `docs/memory/sft.md`; linguagens de
 programação com 13%, HTML/CSS/JSON/YAML com 5,5%):
 
 | Tarefa | Fácil | Médio | Difícil |

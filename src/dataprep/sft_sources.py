@@ -1,4 +1,4 @@
-"""Fontes públicas do SFT v2: download cru, uma pasta por fonte (ver docs/sft-v2.md).
+"""Fontes públicas do SFT v2: download cru, uma pasta por fonte (ver docs/memory/sft-v2.md).
 
 Cada fonte vai para ``data/codelm_sft/v2/raw/<fonte>/``, sem nenhum filtro: os
 parquets do Hugging Face (só as colunas úteis, lidas direto do conversor de parquet

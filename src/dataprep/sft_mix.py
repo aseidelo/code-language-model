@@ -1,4 +1,4 @@
-"""Metas do SFT: tarefas, pesos e volumes de cada mistura (ver docs/sft.md).
+"""Metas do SFT: tarefas, pesos e volumes de cada mistura (ver docs/memory/sft.md).
 
 Cada exemplo cai numa célula (tarefa × nível × linguagem × idioma); ``quota``
 diz quantos exemplos a célula precisa.

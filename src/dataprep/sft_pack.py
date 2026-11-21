@@ -1,4 +1,4 @@
-"""Empacota o banco de SFT para o treino (ver docs/sft.md).
+"""Empacota o banco de SFT para o treino (ver docs/memory/sft.md).
 
 Lê todos os parquets de ``sft/bank/``, aplica a receita da mistura e o limite de
 contexto, separa a validação por repositório e tokeniza com

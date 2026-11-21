@@ -6,7 +6,7 @@ sampler (llguidance) embutida:
 
 * ``llama`` (v1): Llama padrão (RMSNorm, SwiGLU, RoPE, atenção com poucas
   cabeças de K/V, sem bias), contexto de 2048, todas as camadas globais.
-* ``gemma3`` (v2, ver ``docs/arquitetura-v2.md``): Gemma 3 só texto, com
+* ``gemma3`` (v2, ver ``docs/memory/arquitetura-v2.md``): Gemma 3 só texto, com
   camadas de atenção local (janela de 1024) e global alternadas, 3 locais para
   cada global, e contexto de 8192. Usa o pacote do Gemma 3 como ele é (GELU-tanh,
   QK-norm, normas antes e depois de cada bloco, embeddings escalados por √d),

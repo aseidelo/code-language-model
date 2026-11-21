@@ -1,4 +1,4 @@
-"""Corpus de pré-treino v2: ~11,5 bilhões de tokens no formato do modelo (ver ``docs/dados-v2.md``).
+"""Corpus de pré-treino v2: ~11,5 bilhões de tokens no formato do modelo (ver ``docs/memory/dados-v2.md``).
 
 Subcomandos (rodar nesta ordem):
 
@@ -82,7 +82,7 @@ PACK_WORKERS = 12
 # guarda uma amostra de documentos por tipo.
 VALID_DOCS_PER_KIND = 2000
 
-# Corpus v2 (docs/dados-v2.md): 10B tokens. Fração do total por tipo de documento.
+# Corpus v2 (docs/memory/dados-v2.md): 10B tokens. Fração do total por tipo de documento.
 TOTAL_TOKENS = 10_000_000_000
 MIX = {
     "python": 0.35, "javascript": 0.08, "typescript": 0.08, "java": 0.08, "c": 0.07, "rust": 0.06,

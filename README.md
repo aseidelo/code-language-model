@@ -39,7 +39,7 @@ O caminho até aqui:
 
 Próximas etapas: ajuste fino nas tarefas (seguir pedidos, descrever código, JSON) e
 RL com a execução do código como recompensa. Depois, recomeçar do zero para incluir
-o bash (`docs/bash.md`).
+o bash (`docs/memory/bash.md`).
 
 # Pastas
 
@@ -60,6 +60,10 @@ src/
 └── train/          tudo que é treino ou avaliação (tokenizador, modelo, exportação)
 assets/tokenizer/   tokenizador treinado e lista de tokens fixos (versionados)
 notebooks/          exemplos: gramatica_sampler.ipynb, inferencia_pretreino.ipynb
+docs/
+├── reports/        relatórios técnicos, um por versão do modelo (a documentação principal)
+├── benchmarks/     páginas de benchmark geradas pelo eval.passk / eval.benchmark
+└── memory/         notas de desenho e estado (referência para o agente e para o usuário)
 data/               link para a pasta datasets/ do volume de dados (fora do git):
                     um diretório por dataset + code-language-model/ (dados gerados)
 third_party/        llama.cpp compilado localmente (fora do git)

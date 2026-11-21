@@ -1,4 +1,4 @@
-"""T6, corrigir bug: exemplos procedurais a partir de soluções com testes (ver docs/sft-v2.md).
+"""T6, corrigir bug: exemplos procedurais a partir de soluções com testes (ver docs/memory/sft-v2.md).
 
 Uma mutação introduz um bug numa solução Python que passa nos testes. O mutante
 só entra se reprovar pelo menos um teste. A mutação troca um trecho do texto

@@ -1,4 +1,4 @@
-"""Controle de qualidade do SFT v2, camada 1: verificações determinísticas (ver docs/sft-v2.md).
+"""Controle de qualidade do SFT v2, camada 1: verificações determinísticas (ver docs/memory/sft-v2.md).
 
 Para cada parte de ``v2/fontes/<fonte>/`` grava ``v2/qc/<fonte>/<parte>`` com o ``id``
 do exemplo e as colunas ``qc_*``. ``True`` passou, ``False`` reprovou, nulo não se

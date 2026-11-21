@@ -1,6 +1,6 @@
 # GRPO
 
-Ajuste por reforço sobre os exercícios verificáveis (ver `docs/sft.md`): o modelo
+Ajuste por reforço sobre os exercícios verificáveis (ver `docs/memory/sft.md`): o modelo
 gera várias respostas para o mesmo exercício, cada uma recebe uma recompensa, e o
 gradiente favorece as melhores do grupo.
 
@@ -175,10 +175,10 @@ difícil.
 | grpo-v3 / 500 | 40,4% | 11 | 69 | 73,7% |
 
 O v3 corrigiu o esquecimento do v2, mas não melhorou o T=0: a captura ficou perto de 0%
-(critério em `docs/etapas.md`). O ganho a T=0,7 foi o modelo concentrando a
+(critério em `docs/memory/etapas.md`). O ganho a T=0,7 foi o modelo concentrando a
 distribuição no que ele já fazia a T=0. O T4 subiu nos dois GRPOs (~+6, perto de 2
 erros padrão), sem explicação ainda. Conclusão: com este modelo base, o gargalo está
-antes do RL (ver a comparação com o Codex em `docs/etapas.md`).
+antes do RL (ver a comparação com o Codex em `docs/memory/etapas.md`).
 
 ## Estrutura do código
 

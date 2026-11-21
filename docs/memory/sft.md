@@ -127,7 +127,7 @@ um LLM auxiliar. Datasets públicos completam T1 em Python e JavaScript.
 | T1, T3, T4 | **instrução reversa**: a partir de um trecho real, o LLM escreve o pedido que levaria a ele, a descrição ou o JSON. Mais Magicoder OSS-Instruct, self-oss-instruct e similares em T1. |
 | T2, T5 | funções com docstring extraídas do corpus com tree-sitter. |
 
-O levantamento do que existe em cada célula está em `docs/sft_candidatos.md`.
+O levantamento do que existe em cada célula está em `docs/memory/sft_candidatos.md`.
 
 **LLM auxiliar:** Claude Haiku 5.5 (`claude-haiku-5-5`), pela API, com chave
 própria. O volume vai pela Message Batches API (metade do preço). Em T3 e T4 o
@@ -276,4 +276,4 @@ uv run --with llama-cpp-python python -m eval.viewer exercises base-sft-v1/step-
   no SFT único após o pré-treino: `sft/exercises/` tem as colunas do banco para isso.
 - Em `pack-exercicios`, `level` é o conceito, para ver a perda por conceito.
 - Três partes sem problema em comum: `train` (SFT), `rl` (GRPO) e `valid`. O GRPO
-  precisa de problemas que o SFT não viu; detalhes em `docs/grpo.md`.
+  precisa de problemas que o SFT não viu; detalhes em `docs/memory/grpo.md`.

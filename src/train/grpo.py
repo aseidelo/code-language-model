@@ -3,7 +3,7 @@
 * Cada passo amostra ``groups`` exercícios, ``samples`` vezes cada, com a máscara de
   gramática por sequência. A vantagem é relativa à média do grupo: grupo uniforme não
   ensina nada.
-* Recompensa pela porta ``train.rl.reward`` (ver docs/grpo.md): correctness binária,
+* Recompensa pela porta ``train.rl.reward`` (ver docs/memory/grpo.md): correctness binária,
   readability e efficiency só como desempate entre respostas corretas, com os pesos de
   ``Config``. Vantagem sem divisão pelo desvio do grupo. As referências da efficiency vão no checkpoint.
 * A perda usa a mesma máscara e a mesma temperatura da amostragem, com QAT ligado, e
@@ -513,7 +513,7 @@ def evaluate(args) -> None:
 
 
 def sweep(args) -> None:
-    """Escolha da temperatura do GRPO: só grupos com acerto e erro dão sinal (ver docs/grpo.md)."""
+    """Escolha da temperatura do GRPO: só grupos com acerto e erro dão sinal (ver docs/memory/grpo.md)."""
     use_tokenizer_of(CHECKPOINT_DIR / args.checkpoint)
     device, tokenizer, cfg = pick_device(), load_tokenizer(), Config()
     if args.split == "rl":

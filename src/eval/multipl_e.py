@@ -1,4 +1,4 @@
-"""MultiPL-E: HumanEval e MBPP traduzidos para outras linguagens (ver docs/benchmarks.md).
+"""MultiPL-E: HumanEval e MBPP traduzidos para outras linguagens (ver docs/memory/benchmarks.md).
 
 Cada problema traz o prompt (comentário de documentação + assinatura aberta), os
 testes e as sequências de parada próprias da linguagem. O programa avaliado é

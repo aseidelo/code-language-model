@@ -1,6 +1,6 @@
 """Porta da recompensa: o treino depende só daqui; cada linguagem tem seu adaptador.
 
-A recompensa tem três dimensões (ver docs/grpo.md):
+A recompensa tem três dimensões (ver docs/memory/grpo.md):
 
 * correctness, -1, 0 ou 1: 1 se passa em todos os testes, 0 se falha algum ou usa um
   nome proibido, -1 se não compila (sem nota parcial);

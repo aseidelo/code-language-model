@@ -1,7 +1,7 @@
 """Pré-treino do modelo no corpus de ``dataprep.pretrain``.
 
 * Arquitetura: ``--arch llama`` (v1, contexto de 2048) ou ``--arch gemma3`` (v2,
-  atenção local/global, contexto de 8192; ver ``docs/arquitetura-v2.md``).
+  atenção local/global, contexto de 8192; ver ``docs/memory/arquitetura-v2.md``).
 * Dados: blocos do tamanho do contexto da arquitetura, tirados do ``train.bin``
   (documentos já embaralhados e separados por ``<|endoftext|>``), em ordem
   aleatória por época.

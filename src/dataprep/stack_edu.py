@@ -6,7 +6,7 @@ arquivo vem do bucket S3 público da Software Heritage, por HTTPS anônimo e sem
 conta da AWS (``CONTENT_HOST``, gzip): uma requisição por arquivo, então o
 download é paralelo.
 
-Os metadados ficam em ``data/stack-edu/meta/<config>/``. Ver ``docs/dados-v2.md``.
+Os metadados ficam em ``data/stack-edu/meta/<config>/``. Ver ``docs/memory/dados-v2.md``.
 """
 
 import gzip

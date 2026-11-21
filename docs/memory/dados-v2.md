@@ -1,6 +1,6 @@
 # Dados do pré-treino v2
 
-Desenho de 2026-11-10. A arquitetura já está decidida (`docs/arquitetura-v2.md`): Gemma 3
+Desenho de 2026-11-10. A arquitetura já está decidida (`docs/memory/arquitetura-v2.md`): Gemma 3
 local/global, contexto de 8k, tamanho `base` (113M), treino no Modal (H100,
 FlashAttention 2).
 
@@ -18,7 +18,7 @@ todas as licenças do Stack-Edu (vale a licença do dataset).
 - Gerar dados nos outros idiomas é difícil (um problema do SFT), e o texto em
   es/pt/fr/de/it ocupava 9% do treino. **Decidido: o inglês passa a dominar; os outros
   idiomas ficam numa fatia pequena**, porque o objetivo do projeto continua multilíngue
-  nos pedidos (`docs/etapas.md`) e o texto do FineWeb2-HQ já está baixado.
+  nos pedidos (`docs/memory/etapas.md`) e o texto do FineWeb2-HQ já está baixado.
 - O tempo de GPU deixou de ser o limite. Na H100, o `base` deve fazer ~200–250k tokens/s
   (estimativa, a medir): 5B tokens em ~6 h, ~US$ 25. **O limite passa a ser a qualidade
   por token.**
@@ -96,7 +96,7 @@ para o caso de precisar filtrar depois.
 
 **Bash:** o Shell do Stack-Edu inclui outras coisas. Nas 3 primeiras linhas já
 apareceram um `PKGBUILD` e um arquivo sem extensão. É preciso filtrar por extensão
-(`.sh`, `.bash`) ou pela linha `#!` (bash/sh). O plano do `docs/bash.md` vale aqui: lexer e
+(`.sh`, `.bash`) ou pela linha `#!` (bash/sh). O plano do `docs/memory/bash.md` vale aqui: lexer e
 indentação testados com heredocs, `#` e continuação com `\`; sem gramática no sampler
 por enquanto.
 
@@ -110,7 +110,7 @@ por enquanto.
 ### Tokenizer: refeito (consequência do Bash)
 
 O Bash precisa de `<|lang:bash|>`, e o vocabulário atual (16.384 tokens) não tem nenhum
-reservado. Pelo `docs/bash.md`, a adição do Bash é feita recomeçando do zero: tokens
+reservado. Pelo `docs/memory/bash.md`, a adição do Bash é feita recomeçando do zero: tokens
 fixos (`train.fixed_tokens`), tokenizer (`train.train_tokenizer`), corpus, pré-treino e
 SFT. Os dados do SFT precisam ser tokenizados de novo.
 

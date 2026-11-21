@@ -1,4 +1,4 @@
-"""Tradução do texto natural dos dados de SFT com o Claude Haiku (ver docs/sft.md).
+"""Tradução do texto natural dos dados de SFT com o Claude Haiku (ver docs/memory/sft.md).
 
 Traduz só texto em linguagem natural (pedidos, descrições, docstrings, valores
 do JSON); quem chama separa isso do código. Trechos de código citados no texto

@@ -1,6 +1,6 @@
 """Tarefas procedurais de JSON/YAML a partir dos arquivos do The Stack (os mesmos do pré-treino v2).
 
-Desenho em docs/sft-v2.md ("JSON/YAML procedural"). Resumo:
+Desenho em docs/memory/sft-v2.md ("JSON/YAML procedural"). Resumo:
 
 * Sementes: ``the-stack-dedup/filtered-v2/{json,yaml}``, documentos de 16–600 tokens que parseiam
   (YAML: um documento só, sem tags desconhecidas), objeto ou lista na raiz, sem duplicatas.
