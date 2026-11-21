@@ -280,6 +280,16 @@ vazão. Se o Opus-MT ficar ruim, a alternativa é um LLM pequeno local (Qwen3-4B
 - **Entram:** só exemplos em inglês, aprovados no QC, com `kind=code`, fora T5/T6/JSON-YAML.
 - **Saída:** cada parte traduzida vira `part-<fonte>-<parte>-<idioma>.parquet`, com `prompt_en` e
   `fonte_original`. A rodada é retomável.
+- **Templates (2026-11-21):** 83% da fase A era T2, cujo pedido é só um dos 15 templates em
+  inglês. O Opus-MT traduzia essas 15 frases ~22 mil vezes cada, às vezes mal (de: "Führen Sie
+  diese Funktion … durch"), e no pt rejeitava sempre "Fill in the implementation of the following
+  function." por tamanho (22.215 rejeições). Agora pedido que é template vira o template de mesmo
+  índice em `assets/sft/instructions.json` (as listas são paralelas), sem Opus-MT. O comando
+  `sft_translate templates` refez as partes já traduzidas (T2 do pt: 311.519 → 333.733; nos outros
+  idiomas só trocou o texto). A docstring do código continua em inglês: o exemplo fica bilíngue de
+  propósito. Backup da versão anterior em `v2/traducao/backup-traducao-v2-antes-templates/`.
+  Total da fase A: 2.002.743 exemplos, ~685M tokens. A saída tem ids repetidos que já vinham das
+  fontes (~9 mil no pt); a deduplicação os marca.
 - **Fase B (pendente):** completar os idiomas com Python, HTML e outras linguagens. A ideia é
   priorizar prompt curto com código longo, que rende mais tokens por caractere traduzido.
 

@@ -8,6 +8,8 @@ Desenho em docs/sft-v2.md ("Tradução local"). Resumo:
   aparecem no código do exemplo (``nums``, ``target``).
 * A prosa é traduzida linha a linha (linhas longas por sentença), mantendo os prefixos de markdown.
 * Rejeita quando um marcador se perde, o detector acusa outro idioma ou o tamanho foge do esperado.
+* Pedido que é um template em inglês (T2: "Finish this function.") não passa pelo Opus-MT: vira o
+  template de mesmo índice no idioma de destino, de ``assets/sft/instructions.json``.
 
 Piloto: ``piloto --por-idioma 50`` sorteia exemplos em inglês de várias fontes e linguagens (cada
 idioma recebe exemplos diferentes), traduz o pedido e grava ``v2/traducao/piloto.parquet`` e
@@ -38,6 +40,7 @@ from dataprep.sft_convert import FENCE, detect_nls
 TRANSLATION_DIR = FONTES_DIR.parent / "traducao"
 REVIEW_SAMPLE = FONTES_DIR.parent / "revisao" / "amostra-traducao.json"
 GLOSSARY = ASSETS_DIR / "sft" / "glossario.txt"
+INSTRUCTIONS = ASSETS_DIR / "sft" / "instructions.json"
 TARGETS = ("pt", "es", "fr", "de", "it")
 # tc-big onde existe; en-de só tem o modelo base.
 MODELS = {"pt": ("Helsinki-NLP/opus-mt-tc-big-en-pt", ">>por<< "), "es": ("Helsinki-NLP/opus-mt-tc-big-en-es", ""),
@@ -357,33 +360,88 @@ def selected(table: pa.Table, qc: pa.Table, nl: str) -> pa.Table:
     return table.take(pa.array(keep, pa.int64()))
 
 
-def translate_part(translator: CT2Translator, nl: str, fonte: str, part: Path, stats: Counter) -> None:
+@lru_cache(maxsize=1)
+def instruction_templates() -> dict[str, dict[str, str]]:
+    """Template em inglês -> {idioma: template de mesmo índice}, de todas as tarefas."""
+    out: dict[str, dict[str, str]] = {}
+    for by_nl in json.loads(INSTRUCTIONS.read_text()).values():
+        for i, en in enumerate(by_nl["en"]):
+            out[en] = {nl: by_nl[nl][i] for nl in TARGETS}
+    return out
+
+
+def translated_row(row: dict, text: str, nl: str, fonte: str) -> dict:
     from dataprep.sft_convert import estimate_tokens
+    n_tokens = (row.get("n_tokens") or 0) + estimate_tokens(text, None) - estimate_tokens(row["prompt"], None)
+    return {**row, "id": f"{row['id']}-{nl}", "nl": nl, "prompt": text, "prompt_en": row["prompt"],
+            "fonte_original": fonte, "n_tokens": n_tokens}
+
+
+def part_paths(nl: str, fonte: str, part: Path) -> tuple[Path, Path]:
+    """(saída traduzida, QC da parte de origem)."""
     out = FONTES_DIR / OUT_FONTE / f"part-{fonte}-{part.stem.removeprefix('part-')}-{nl}.parquet"
-    qc_path = FONTES_DIR.parent / "qc" / fonte / part.name
+    return out, FONTES_DIR.parent / "qc" / fonte / part.name
+
+
+def write_part(out: Path, schema: pa.Schema, rows: list[dict]) -> None:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    schema = schema.append(pa.field("prompt_en", pa.string())).append(pa.field("fonte_original", pa.string()))
+    tmp = out.with_suffix(".tmp")
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), tmp, compression="zstd")
+    tmp.rename(out)
+
+
+def translate_part(translator: CT2Translator, nl: str, fonte: str, part: Path, stats: Counter) -> None:
+    out, qc_path = part_paths(nl, fonte, part)
     if out.exists() or not qc_path.exists():
         return
     table = selected(pq.read_table(part), pq.read_table(qc_path, columns=["id", "qc_falhas"]), nl)
     if not len(table):
         return
-    rows = table.to_pylist()
-    kept = []
-    for start in range(0, len(rows), CHUNK):
-        chunk = rows[start:start + CHUNK]
+    templates = instruction_templates()
+    kept, to_translate = [], []
+    for row in table.to_pylist():
+        if row["prompt"] in templates:
+            stats[f"{nl}:template"] += 1
+            kept.append(translated_row(row, templates[row["prompt"]][nl], nl, fonte))
+        else:
+            to_translate.append(row)
+    for start in range(0, len(to_translate), CHUNK):
+        chunk = to_translate[start:start + CHUNK]
         items = [(r["prompt"], code_words(prompt_code(r["prompt"]), r.get("response"), r.get("code"))) for r in chunk]
         for row, (text, reason) in zip(chunk, translate_texts(translator, nl, items)):
             stats[f"{nl}:{reason.split(' ')[0]}"] += 1
-            if text is None:
-                continue
-            row["n_tokens"] = (row.get("n_tokens") or 0) + estimate_tokens(text, None) - estimate_tokens(row["prompt"], None)
-            kept.append({**row, "id": f"{row['id']}-{nl}", "nl": nl, "prompt": text, "prompt_en": row["prompt"],
-                         "fonte_original": fonte})
+            if text is not None:
+                kept.append(translated_row(row, text, nl, fonte))
     if kept:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        schema = table.schema.append(pa.field("prompt_en", pa.string())).append(pa.field("fonte_original", pa.string()))
-        tmp = out.with_suffix(".tmp")
-        pq.write_table(pa.Table.from_pylist(kept, schema=schema), tmp, compression="zstd")
-        tmp.rename(out)
+        write_part(out, table.schema, kept)
+
+
+def apply_templates(targets: list[str]) -> None:
+    """Refaz, nas partes já traduzidas, os pedidos que são template: troca a saída do Opus-MT pelo template
+    escrito à mão e recupera os que o Opus-MT tinha perdido (rejeitados). As outras linhas ficam como estão."""
+    templates = instruction_templates()
+    fontes = sorted(p.name for p in FONTES_DIR.iterdir() if p.is_dir() and not p.name.startswith(SKIP_FONTES))
+    stats_path = FONTES_DIR / OUT_FONTE / "templates.json"
+    stats: Counter = Counter()
+    for nl in targets:
+        for fonte in fontes:
+            for part in sorted((FONTES_DIR / fonte).glob("part-*.parquet")):
+                out, qc_path = part_paths(nl, fonte, part)
+                if not out.exists():  # parte ainda não traduzida: o ``traduzir`` já usa os templates
+                    continue
+                old = pq.read_table(out).to_pylist()
+                kept = [r for r in old if r["prompt_en"] not in templates]
+                table = selected(pq.read_table(part), pq.read_table(qc_path, columns=["id", "qc_falhas"]), nl)
+                new = [translated_row(r, templates[r["prompt"]][nl], nl, fonte)
+                       for r in table.to_pylist() if r["prompt"] in templates]
+                stats[f"{nl}:antes"] += len(old) - len(kept)
+                stats[f"{nl}:depois"] += len(new)
+                write_part(out, table.schema, kept + new)
+            print(f"  {nl} {fonte}: template {stats[f'{nl}:antes']:,} -> {stats[f'{nl}:depois']:,}", flush=True)
+    previous = json.loads(stats_path.read_text()) if stats_path.exists() else {}
+    stats_path.write_text(json.dumps(dict(sorted({**previous, **stats}.items())), indent=1))
+    save_translation_meta()
 
 
 def translate_all(targets: list[str]) -> None:
@@ -425,9 +483,13 @@ def main() -> None:
     pilot_cmd.add_argument("--por-idioma", type=int, default=50)
     run_cmd = sub.add_parser("traduzir", help="fase A: linguagens escassas, 1 tradução por exemplo")
     run_cmd.add_argument("idiomas", nargs="*", default=list(TARGETS))
+    tpl_cmd = sub.add_parser("templates", help="troca, nas partes já traduzidas, o Opus-MT dos templates pelo manual")
+    tpl_cmd.add_argument("idiomas", nargs="*", default=list(TARGETS))
     args = parser.parse_args()
     if args.cmd == "piloto":
         pilot(args.por_idioma)
+    elif args.cmd == "templates":
+        apply_templates(args.idiomas)
     else:
         translate_all(args.idiomas)
 
