@@ -306,6 +306,13 @@ vazão. Se o Opus-MT ficar ruim, a alternativa é um LLM pequeno local (Qwen3-4B
 - **T5 fica de fora:** com o pedido traduzido, a resposta (a docstring) continuaria em inglês.
 - As regras da fase A continuam: 1 tradução por exemplo, idioma sorteado pelo id e só exemplos
   aprovados no QC. O plano fica em `traducao-v2b/plano.json`.
+- **Resultado (concluída em 2026-11-21, ~10 h de CPU):** 2,68M exemplos, ~1,31B tokens estimados.
+  Por idioma: Python ~226M (~480k ex.) e HTML ~36M (~52k ex.). Cada idioma soma
+  ~263M tokens novos aos ~320M de antes, então chega perto dos 600M do alvo.
+  - T1 aprovados: ~243k por idioma. T2 por template: ~285k–292k por idioma.
+  - Rejeições: o `marcador` fica em 1,2% no pt e em 2,4–3,4% nos outros (es, fr, de, it).
+    `nao_traduzido` fica em ~0,2%. `tamanho` e `idioma` são desprezíveis.
+  - O `sft_post` já rodou: qa_vazado 0,02% e contexto_ausente 0,27%.
 
 ## Ordem de trabalho
 
@@ -375,9 +382,58 @@ O QC **marca, não apaga**: cada exemplo ganha colunas `qc_*` num parquet à par
 **Camada 2, execução:** `qc_testes_passam` nas fontes com testes (a solução original no
 sandbox; o T6 já roda isso).
 
-**Camada 3, duplicatas e contaminação:** `qc_dup_de` (exata por hash normalizado de pedido +
-resposta; quase-duplicata por MinHash do pedido; entre fontes) e `qc_contaminado` (13-gramas
-contra HumanEval, MBPP, MultiPL-E, McEval, HumanEval-XL, CRUXEval e os nossos valid/rl).
+**Camada 3, duplicatas e contaminação** (desenho aprovado e rodado em 2026-11-22):
+
+- **Duplicatas** (`dataprep/sft_dedup.py`, saída em `v2/dedup/<fonte>/<parte>`: `dup_de`, `dup_tipo`):
+  - O pedido é `prompt` + `code`, porque no T2, T5, T6 e T7 o `prompt` é só o template.
+  - **Exata:** hash de `(task, nl, lang, pedido + resposta)`, com os espaços normalizados.
+  - **Próxima:** MinHash do pedido (5-gramas de palavras e símbolos, 128 permutações; LSH com 16×8),
+    com Jaccard estimado >= 0,8 e escopo `(task, nl, lang)`, entre fontes. T6 e T7 só têm exata.
+    - A `lang` entrou depois da 1ª rodada: o rosetta-code repete o enunciado em cada linguagem e
+      saía com 98% de duplicatas.
+  - **Quem fica:** um por grupo. Ordem: limpo (QC + pós), depois o nível da fonte, depois o hash do id.
+    - Nível 0: com testes (kodcode, acecode, exercicios-v1, opc-stage2-*).
+    - Nível 1: código real (corpus-v2, code-search-net, rosetta, nl2bash*, tldr, banco-v1,
+      websight, jy-stack).
+    - Nível 2: sintéticas e as fontes de bash.
+    - Nível 3: traduções.
+  - **Estrela, não cadeia:** a união em cadeia juntou 23,8 mil variantes de "palíndromo" (similaridade
+    mediana de 0,54 com o que ficava). Agora, em cada componente, o melhor fica, só quem tem >= 0,8
+    com ele vira duplicata, e o resto recomeça.
+  - **Resultado:** 2,37M duplicatas (6,8%), das quais 867 mil exatas.
+    - Exatas altas entre os derivados do Infinity: codefeedback 39%, opc-stage1-infinity 37%,
+      magicoder-evol 31%, code-alpaca 23%, nl2bash 57%.
+    - Próximas altas: realuser 27% (o maior grupo são 28,5 mil cópias de um prompt de Midjourney),
+      opc-stage2-educational 24%, bash-instruct-iii 22%.
+    - T6 e jy-stack: ~0%.
+  - **Custo:** assinaturas em ~12 min com 12 workers (`v2/dedup/trabalho/`, ~22 GB temporários);
+    agrupamento em ~14 min.
+- **Contaminação** (`dataprep/sft_contam.py`, saída em `v2/contaminacao/<fonte>/<parte>`):
+  - **Referências** (22,9 mil problemas):
+    - HumanEval e MBPP (todos os splits);
+    - MultiPL-E HumanEval/MBPP (js, ts, java, rs, sh);
+    - HumanEval-XL (4 linguagens × 6 idiomas, do GitHub dos autores);
+    - McEval generation nas nossas linguagens;
+    - CRUXEval e NL2SH-ALFA;
+    - os nossos exercícios `valid` (todas as versões) e `rl`.
+  - **Medida:** 10-gramas; o texto do exemplo é pedido + code + resposta (+ `prompt_en`).
+  - **Regra (decidida em 2026-11-22, depois de calibrar):** só o enunciado conta. Cobertura >= 0,5,
+    com pelo menos 10 n-gramas (os menores precisam de cobertura total), ou pedido igual ao
+    enunciado curto.
+    - A regra aprovada antes (enunciado OU solução >= 0,5) marcava 838 mil. A solução casava idiomas
+      genéricos: o `is_prime` 6k±1 dava 79 mil hits num exercício e 30 mil no McEval Python/30.
+    - Enunciados de 4 n-gramas do MBPP casavam com metade deles.
+  - As coberturas ficam gravadas (`cob_enunciado`, `cob_solucao`...): `--reaplicar` recalcula a marca
+    sem refazer a busca, que leva ~13 min.
+  - **Resultado:** ~78 mil exemplos marcados.
+    - HumanEval: 1,1 mil exemplos, de 67 problemas. Muitos são versões "evoluídas" do benchmark no
+      codefeedback, magicoder-evol e realuser.
+    - HumanEval-XL 1,2 mil/40; MBPP 2,2 mil/158; NL2SH 227/44; MultiPL-E 264/14; McEval 42/3.
+    - Exercícios: 73 mil. O exercicios-v1 (treino antigo) cai no `valid` novo, e os `ex-oc` vieram
+      do opc-stage2-educational.
+  - A lista de problemas atingidos fica em `v2/contaminacao/problemas.json`, para reportar o pass@k
+    no subconjunto limpo.
+- **Na mistura:** exclui quem tem `dup_de` ou `contaminado`.
 
 **Revisão humana:** amostra pequena, estratificada por fonte × linguagem × tarefa, numa
 página web local (ok / ruim / motivo). Calibra os limiares e a taxa de erro de cada fonte,
@@ -385,9 +441,91 @@ que vira o peso na mistura.
 
 **Relatório por fonte:** % reprovado em cada verificação, duplicatas, contaminação.
 
+**Pós-processamento** (`dataprep/sft_post.py`, decidido em 2026-11-21): regras tiradas da revisão
+humana de 100 exemplos aleatórios (84 aprovados, 13 rejeitados e 3 dúvidas). Roda depois do QC e
+grava `v2/post/<fonte>/<parte>`. Não muda as fontes.
+
+- **Regras precisas (`post_falhas`, a mistura exclui):**
+  - `qa_vazado`: o pedido já traz `**Answer**:`/`答案：`. Atinge 21,6% do opc-stage1-largescale.
+  - `sem_linguagem`: `lang = outra:?` (perguntas e respostas, prosa; ~1,87M exemplos). Perde ~500
+    respostas de código dentro de um bloco cercado.
+  - `diff`: `lang = outra:ndiff|diff`.
+  - `trivial`: comando do tldr que é só o nome do programa.
+- **Heurísticas (`post_marcas`; validadas em 2026-11-22, e o usuário aprovou excluí-las na mistura, como as falhas):**
+  - `contexto_ausente`: verbo + "the given/provided/following code|snippet|array…", ou um link
+    de sandbox, sem código no pedido;
+  - `sem_codigo`: T1 sem bloco de código e com mais de 60% das linhas da resposta em prosa.
+  - A validação usa `eval.sft_review amostra-pos` + `servir --pos`, e o `resumo --pos` dá a precisão
+    por marca.
+- **Rótulos corrigidos, decisão do usuário (`lang_corrigido`/`nl_corrigido`):**
+  - `nl`: `en` com pelo menos 10% de letras CJK na prosa do pedido (ou na docstring no T2/T5) vira
+    `outra:zh|ja|ko`;
+  - `lang`: o pedido cita uma linguagem que não é nossa e a resposta não parseia -> `outra:<x>`
+    (por exemplo, PHP com `lang=html` e CUDA com `lang=c`). Ou o QC acusou `linguagem`, o pedido
+    cita só uma das nossas e a resposta parseia nela -> essa linguagem.
+- **Na amostra revisada:** 11 dos 13 rejeitados disparam alguma regra. Os outros 2 estão em `outra:zh`,
+  que tem peso zero. A dúvida do T2 com docstring em chinês foi corrigida para `outra:zh`.
+- Nas traduções, as regras usam o `prompt_en`. O comando é retomável e pula as partes já feitas;
+  quando as regras mudam, `--refazer` recalcula tudo (~15 min com 4 workers).
+- **Validação das heurísticas (2026-11-22, `amostra-pos`, 60 revisados):**
+  - Versão 1: `lang_corrigido` 10/10; `contexto_ausente` 11/25 (44%); `sem_codigo` 7/25 (28%).
+  - Falsos positivos do `sem_codigo`: Python com docstring longa e código com comentário na mesma
+    linha. Os acertos eram resposta `<p>` do StackOverflow rotulada como html e um JSON rotulado
+    como python. Correção: tirar docstrings (Python) e comentários de linha antes de medir a prosa.
+  - Falsos positivos do `contexto_ausente`:
+    - dado colado na linha (`[8, 2, 5]`);
+    - código sem cerca, que agora conta linhas terminadas em `:` ou `)`;
+    - "the following function:" sem verbo antes, que abre uma especificação;
+    - "modify the function" sem qualificador;
+    - snippet citado só como inspiração ("as a starting point/reference", "without referencing").
+  - Correção: `missing_context()` exige qualificador depois de "the", aceita essas desculpas e trata
+    `[a, b, c]` e `{…}` em linha como contexto presente.
+  - Versão 2, medida na mesma amostra (otimista): `contexto_ausente` 10/13 (77%; perdeu 1 dos 11
+    ruins); `sem_codigo` 7/7.
+  - Totais nos exemplos limpos (QC e falhas), fontes originais: `contexto_ausente` 102.671 → 55.214;
+    `sem_codigo` 2.201 → 844. Nas traduções: 9.558 e 178.
+  - Os falsos positivos que sobram citam "the given code snippet", mas a tarefa se resolve sem ele
+    (o modelo define a struct ou classe). Uma regex não separa esses casos.
+
 Fora por enquanto: nota do classificador educacional e perplexidade do base-v2. Só entram se
 a revisão mostrar que as camadas acima não separam o bom do médio.
 
 Custo medido: a gramática valida ~20–28 mil tokens/s por núcleo (~6 h para o Python todo
 em 14 núcleos). Python e JSON são as únicas linguagens com gramática; nas outras, o QC
 usa tree-sitter.
+
+## Dataset final (fechado em 2026-11-22)
+
+`dataprep/sft_final.py` (+ `sft_card.py`) monta a versão final. A mistura aprovada:
+
+- **O que entra:** todo exemplo limpo (sem `qc_falhas`, `post_falhas`, `post_marcas`, `dup_de` nem
+  `contaminado`) nos 6 idiomas, com os rótulos `lang`/`nl` corrigidos pelo pós-processamento.
+- **Pesos** (coluna `peso`, aplicados só no pack): WebSight-en 0,5; Bash 2; o resto 1.
+- **Python** fica com ~63% (contra a meta antiga de 45%), e os idiomas fora do inglês com ~4,5%
+  cada: decisão do usuário de levar o máximo de dado bom, pensando em modelos maiores.
+- **Validação:** ~0,07% dos grupos (19,5 mil exemplos). O grupo junta o id sem o prefixo da tarefa
+  e sem o sufixo de idioma: original + traduções + T2/T5 da mesma função ficam juntos.
+- **Redação:** segredos e e-mails viram `<SECRET>`/`<EMAIL>` (`publish.redact`) no texto publicado e
+  no pack: 62 mil segredos e 491 mil e-mails, a maioria na jy-stack.
+
+**Texto** (`data/codelm-sft-v2/`, 11 GB):
+- 28,04M exemplos e ~12,7B tokens de texto (o template soma ~25% no pack).
+- Publicado em `seidel/codelm-sft-v2` no HF: privado, com acesso condicionado (termos do The Stack,
+  incluindo o Stack v2 por causa do Stack-Edu, e um aceite de uso não comercial).
+- Licença CC-BY-NC-SA-4.0, a combinação mais restritiva (regra do usuário). O card diz que cada
+  exemplo mantém a licença da fonte: KodCode NC; McEval-Instruct SA; nl2bash GPL; Rosetta GFDL.
+
+**Pack** (`v2/pack/`, só local, nunca publicado):
+- 24 shards `train-NN.npz` embaralhados e `valid.npz`, no formato do `sft_pack` da v1, com
+  `fonte` a mais nas etiquetas.
+- `outra:*` (0,35B) fica só no texto: o chat template não tem token para essas linguagens.
+- Limite de 8192 tokens.
+
+**Problemas no caminho:**
+- O QC da `traducao-v2` estava velho: o comando `templates` reescreveu as partes depois do QC. Foi
+  refeito, e a deduplicação rodou de novo.
+- O `montar` estourou a RAM (os resultados do `pool.map` se acumulavam). Agora cada worker grava a
+  própria parte, numa janela de 2 partes por worker.
+- O `merge_shard` passou a copiar exemplo a exemplo, sem um índice `int64` do shard inteiro.
+- O `hf` 2.2 não tem `upload-large-folder`: o upload usa `upload_folder` por fonte, em lotes de
+  400 arquivos, e é retomável.

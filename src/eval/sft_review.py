@@ -10,6 +10,12 @@ a cada clique, e a revisão pode parar e continuar.
     uv run python -m eval.sft_review amostra [--por-celula 2] [--maximo 300]
     uv run python -m eval.sft_review servir
     uv run python -m eval.sft_review resumo
+
+``amostra-pos`` sorteia exemplos marcados pelas heurísticas do pós-processamento (``dataprep.sft_post``)
+para medir a precisão delas; ``--pos`` em ``servir`` e ``resumo`` usa essa amostra:
+
+    uv run python -m eval.sft_review amostra-pos [--por-marca 25] [--lang 10]
+    uv run python -m eval.sft_review servir --pos
 """
 
 import argparse
@@ -17,6 +23,8 @@ import json
 import random
 from collections import Counter, defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from pathlib import Path
 
 import pyarrow.parquet as pq
 
@@ -61,6 +69,49 @@ def sample(per_cell: int, maximum: int, seed: int = 0, only_qc: bool = False) ->
     REVIEW_DIR.mkdir(parents=True, exist_ok=True)
     SAMPLE.write_text(json.dumps(chosen, ensure_ascii=False, indent=1, default=str))
     print(f"{len(chosen)} exemplos de {len(cells)} células em {SAMPLE}")
+
+
+def sample_post(per_mark: int, lang_fixes: int, seed: int = 0) -> None:
+    from dataprep.sft_post import MARCAS, POST_DIR
+    r = random.Random(seed)
+    pools: dict[str, list[tuple[Path, str, dict]]] = defaultdict(list)
+    for post_dir in sorted(POST_DIR.glob("*")):
+        if post_dir.name.startswith("traducao"):
+            continue
+        for path in sorted(post_dir.glob("part-*.parquet")):
+            qc_path = QC_DIR / post_dir.name / path.name
+            # Só o que a heurística acrescenta: quem já reprova no QC ou numa regra precisa sai de qualquer jeito.
+            failed = {q["id"] for q in pq.read_table(qc_path, columns=["id", "qc_falhas"]).to_pylist()
+                      if q["qc_falhas"]} if qc_path.exists() else set()
+            for p in pq.read_table(path).to_pylist():
+                if p["post_falhas"]:
+                    continue
+                if p["id"] not in failed:
+                    for m in p["post_marcas"]:
+                        pools[m].append((path, p["id"], p))
+                # A linguagem só é corrigida quando a resposta reprova na sintaxe do rótulo antigo.
+                if p["lang_corrigido"]:
+                    pools["lang_corrigido"].append((path, p["id"], p))
+    quotas = {**{m: per_mark for m in MARCAS}, "lang_corrigido": lang_fixes}
+    chosen: dict[Path, dict[str, tuple[str, dict]]] = defaultdict(dict)
+    for group, n in quotas.items():
+        for path, eid, p in r.sample(pools[group], min(n, len(pools[group]))):
+            chosen[path][eid] = (group, p)
+    out = []
+    for path, wanted in chosen.items():
+        fonte = path.parent.name
+        names = pq.read_schema(FONTES_DIR / fonte / path.name).names
+        rows = pq.read_table(FONTES_DIR / fonte / path.name, columns=[c for c in FIELDS if c in names]).to_pylist()
+        qc_path = QC_DIR / fonte / path.name
+        qc = {q["id"]: q for q in pq.read_table(qc_path).to_pylist()} if qc_path.exists() else {}
+        for row in rows:
+            if row["id"] in wanted:
+                group, p = wanted[row["id"]]
+                out.append({**row, "fonte": fonte, "qc": qc.get(row["id"]), "grupo": group, "post": p})
+    r.shuffle(out)
+    REVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    SAMPLE.write_text(json.dumps(out, ensure_ascii=False, indent=1, default=str))
+    print(f"{len(out)} exemplos em {SAMPLE}: " + ", ".join(f"{g} {len(pools[g]):,} no total" for g in quotas))
 
 
 VERDICTS = [
@@ -161,7 +212,22 @@ def task_guide(translation: bool) -> dict:
     return {"key": "task", "title": "Tasks", "entries": entries}
 
 
-def page_config(translation: bool) -> dict:
+POST_GUIDELINES = [
+    "Each item was flagged by a post-processing heuristic (pill 'grupo', amber 'post:' warning).",
+    "Judge the example as usual: Reject if it really has the problem the flag names, Approve if the flag is wrong.",
+    "For 'lang_corrigido', judge the corrected language: Approve if the new label is right.",
+]
+
+
+def page_config(translation: bool, post: bool = False) -> dict:
+    config = _page_config(translation)
+    if post:
+        config["title"] = "SFT v2 post-processing check"
+        config["guidelines"] = POST_GUIDELINES + config["guidelines"]
+    return config
+
+
+def _page_config(translation: bool) -> dict:
     return {
         "title": "Translation pilot" if translation else "SFT v2 review",
         "dataset": SAMPLE.name,
@@ -178,7 +244,7 @@ def page_config(translation: bool) -> dict:
         "source": {"items": "/amostra", "notes": "/notas"},
         "storageKey": f"codelm-review:{SAMPLE.stem}",
         "idKey": "id",
-        "meta": ["dataset", "task", "lang", "nl", "level", "source"],
+        "meta": ["dataset", "task", "lang", "nl", "level", "source", "grupo"],
         "itemGuide": task_guide(translation),
         "copy": ["qc_falhas"],
         "warn": "avisos",
@@ -198,6 +264,12 @@ def items_for_page() -> list[dict]:
         ex["avisos"] = [f"qc: {f}" for f in (qc.get("qc_falhas") or [])]
         if ex.get("traducao") and ex["traducao"] != "ok":
             ex["avisos"].append(f"translation: {ex['traducao']}")
+        post = ex.get("post") or {}
+        ex["avisos"] += [f"post: {m}" for m in (post.get("post_falhas") or []) + (post.get("post_marcas") or [])]
+        if post.get("lang_corrigido"):
+            ex["avisos"].append(f"post: lang {ex.get('lang')} → {post['lang_corrigido']}")
+        if post.get("nl_corrigido"):
+            ex["avisos"].append(f"post: nl {ex.get('nl')} → {post['nl_corrigido']}")
     return items
 
 
@@ -215,6 +287,7 @@ def load_notes() -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     translation = False
+    post = False
 
     def _send(self, body: bytes, kind: str) -> None:
         self.send_response(200)
@@ -229,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/notas":
             self._send(json.dumps(load_notes(), ensure_ascii=False).encode(), "application/json")
         else:
-            self._send(validation.render(page_config(self.translation)).encode(), "text/html; charset=utf-8")
+            self._send(validation.render(page_config(self.translation, self.post)).encode(), "text/html; charset=utf-8")
 
     def do_POST(self) -> None:
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -244,8 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def serve(port: int, translation: bool = False) -> None:
-    Handler.translation = translation
+def serve(port: int, translation: bool = False, post: bool = False) -> None:
+    Handler.translation, Handler.post = translation, post
     if not SAMPLE.exists():
         raise SystemExit("rode antes: uv run python -m eval.sft_review amostra")
     print(f"revisão em http://localhost:{port} (Ctrl+C para parar)")
@@ -268,6 +341,14 @@ def summary() -> None:
         print(f"  {fonte:<24} {c['bad']:>3} ruins, {c['unsure']:>3} dúvidas de {total:>3} ({100 * c['bad'] / total:.0f}%)")
     print("motivos:", dict(reasons.most_common()))
     print("revisão × QC:", {f"{v} / {q}": n for (v, q), n in sorted(qc_agrees.items())})
+    groups: dict[str, Counter] = defaultdict(Counter)
+    for n in done:
+        if n.get("grupo"):
+            groups[n["grupo"]][n["verdict"]] += 1
+    for group, c in sorted(groups.items()):
+        total = sum(c.values())
+        hit = c["ok"] if group == "lang_corrigido" else c["bad"]
+        print(f"  {group:<18} precisão {100 * hit / total:.0f}% ({hit} de {total}; dúvidas {c['unsure']})")
 
 
 def main() -> None:
@@ -280,16 +361,25 @@ def main() -> None:
     serve_cmd = commands.add_parser("servir")
     serve_cmd.add_argument("--porta", type=int, default=8765)
     serve_cmd.add_argument("--traducao", action="store_true", help="revisa o piloto de tradução")
+    serve_cmd.add_argument("--pos", action="store_true", help="revisa a amostra do pós-processamento")
     summary_cmd = commands.add_parser("resumo")
     summary_cmd.add_argument("--traducao", action="store_true")
+    summary_cmd.add_argument("--pos", action="store_true")
+    post_cmd = commands.add_parser("amostra-pos", help="exemplos marcados pelas heurísticas do pós-processamento")
+    post_cmd.add_argument("--por-marca", type=int, default=25)
+    post_cmd.add_argument("--lang", type=int, default=10, help="exemplos com a linguagem corrigida")
     args = parser.parse_args()
+    global SAMPLE, NOTES
     if getattr(args, "traducao", False):
-        global SAMPLE, NOTES
         SAMPLE, NOTES = REVIEW_DIR / "amostra-traducao.json", REVIEW_DIR / "notas-traducao.json"
-    if args.command == "amostra":
+    if getattr(args, "pos", False) or args.command == "amostra-pos":
+        SAMPLE, NOTES = REVIEW_DIR / "amostra-pos.json", REVIEW_DIR / "notas-pos.json"
+    if args.command == "amostra-pos":
+        sample_post(args.por_marca, args.lang)
+    elif args.command == "amostra":
         sample(args.por_celula, args.maximo, only_qc=args.so_com_qc)
     elif args.command == "servir":
-        serve(args.porta, args.traducao)
+        serve(args.porta, args.traducao, args.pos)
     else:
         summary()
 

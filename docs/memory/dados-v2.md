@@ -225,3 +225,19 @@ O `pack` deve rodar com uma thread do `tokenizers` por processo (o código já f
   `AutoModelForCausalLM` para a Gemma 3 (antes do SFT do v2);
 - os notebooks chamam `load_tokenizer()`, que agora dá o v2; para abrir modelos antigos
   eles precisam de `use_tokenizer_of(checkpoint)`.
+
+## Publicação (2026-11-22)
+
+- **Onde:** o corpus v2 está em `seidel/codelm-pretrain-v2` no HF, privado e com acesso condicionado
+  (termos do The Stack v1 e v2). O v1 (`seidel/codelm-pretrain`) foi apagado do HF e do disco, a
+  pedido do usuário.
+- **Como:** `uv run python -m dataprep.publish` monta `data/codelm-pretrain-v2/` (10 GB: 1.175
+  parquets, ~12,2M documentos), e `--subir` envia de forma retomável. A v1 continua acessível com
+  `--versao v1`.
+- **Conteúdo:**
+  - código com `redact` (87,8 mil segredos e 435 mil e-mails);
+  - colunas `license_type` e `score`;
+  - o card traz, por linguagem, a fração sem licença e a participação no treino do base-v2.
+- **Sem licença (decisão do usuário):** os arquivos `no_license` do Stack-Edu (36–82% dos caracteres,
+  dependendo da linguagem) são publicados como no the-stack-v2: termos de uso, acesso condicionado
+  e pedidos de remoção. Assim, o corpus publicado é igual ao treinado.
